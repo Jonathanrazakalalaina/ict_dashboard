@@ -1,0 +1,209 @@
+<div v-show="page === 'tickets'" class="fade-in">
+
+  <v-card class="section-card pa-4 mb-4" elevation="0">
+    <v-row dense align="center">
+      <v-col cols="12" sm="6" md="3">
+        <v-text-field v-model="ticketFilters.q" prepend-inner-icon="mdi-magnify" placeholder="Rechercher un ticket..." variant="outlined" density="compact" hide-details clearable></v-text-field>
+      </v-col>
+      <v-col cols="6" sm="3" md="2">
+        <v-select v-model="ticketFilters.statut" :items="['Tous'].concat(meta.statuses)" label="Statut" variant="outlined" density="compact" hide-details></v-select>
+      </v-col>
+      <v-col cols="6" sm="3" md="2">
+        <v-select v-model="ticketFilters.priorite" :items="['Toutes'].concat(meta.priorities)" label="Priorité" variant="outlined" density="compact" hide-details></v-select>
+      </v-col>
+      <v-col cols="6" sm="3" md="2">
+        <v-select v-model="ticketFilters.categorie" :items="['Toutes'].concat(meta.categories)" label="Catégorie" variant="outlined" density="compact" hide-details></v-select>
+      </v-col>
+      <v-col cols="6" sm="3" md="2" class="d-flex justify-end">
+        <v-btn color="primary" prepend-icon="mdi-plus" @click="openNewTicket" block>Nouveau ticket</v-btn>
+      </v-col>
+    </v-row>
+  </v-card>
+
+  <v-card class="section-card table-card" elevation="0">
+    <div class="custom-table-wrapper" style="max-height:715px">
+      <table class="custom-table">
+        <thead>
+          <tr>
+            <th>ID</th><th>Titre</th><th>Catégorie</th><th>Priorité</th><th>Statut</th><th>SLA</th><th>Demandeur</th><th>Créé le</th><th></th>
+          </tr>
+        </thead>
+        <tbody v-if="!dataReady">
+          <tr><td colspan="9" class="text-center py-8 text-medium-emphasis">Chargement des tickets...</td></tr>
+        </tbody>
+        <tbody v-else>
+          <tr v-for="t in filteredTickets" :key="t.ID" class="is-clickable" @click="openTicket(t)">
+            <td class="text-caption">{{ t.ID }}</td>
+            <td style="max-width:220px" class="text-truncate">{{ t.Titre }}</td>
+            <td>{{ t.Categorie }}</td>
+            <td><v-chip size="small" :color="priorityColor(t.Priorite)" variant="flat" class="rounded-chip">{{ t.Priorite }}</v-chip></td>
+            <td><v-chip size="small" :color="statusColor(t.Statut)" variant="tonal" class="rounded-chip">{{ t.Statut }}</v-chip></td>
+            <td>
+              <v-chip size="small" :color="t.SLA_Statut === 'Dépassé' ? 'error' : (t.SLA_Statut==='Respecté' ? 'success':'default')" variant="text">
+                {{ t.SLA_Statut }}
+              </v-chip>
+            </td>
+            <td>{{ t.Demandeur || '—' }}</td>
+            <td class="text-caption">{{ formatDate(t.DateCreation) }}</td>
+            <td>
+              <v-btn icon="mdi-delete-outline" size="small" variant="text" color="error" @click.stop="confirmDeleteTicket(t)"></v-btn>
+            </td>
+          </tr>
+          <tr v-if="filteredTickets.length === 0">
+            <td colspan="9" class="text-center py-8 text-medium-emphasis">Aucun ticket trouvé.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </v-card>
+
+  <!-- NEW TICKET DIALOG -->
+  <v-dialog v-model="newTicketDialog" max-width="640" scrollable>
+    <v-card class="pa-2" rounded="lg">
+      <v-card-title class="d-flex align-center justify-space-between">
+        <span class="font-weight-bold">Créer un ticket</span>
+        <v-btn icon="mdi-close" variant="text" size="small" @click="newTicketDialog=false"></v-btn>
+      </v-card-title>
+      <v-card-text>
+        <v-text-field v-model="newTicket.Titre" label="Titre *" variant="outlined" density="comfortable" class="mb-2"></v-text-field>
+        <v-textarea v-model="newTicket.Description" label="Description *" variant="outlined" density="comfortable" rows="3" class="mb-2"></v-textarea>
+        <v-row dense>
+          <v-col cols="6">
+            <v-select v-model="newTicket.Categorie" :items="meta.categories" label="Catégorie" variant="outlined" density="comfortable"></v-select>
+          </v-col>
+          <v-col cols="6">
+            <v-select v-model="newTicket.Priorite" :items="meta.priorities" label="Priorité" variant="outlined" density="comfortable"></v-select>
+          </v-col>
+        </v-row>
+        <v-autocomplete
+          v-model="newTicket.DemandeurID"
+          :items="requesterUsers"
+          item-title="Nom"
+          item-value="ID"
+          label="Demandeur *"
+          variant="outlined" density="comfortable" class="mb-2"
+          clearable no-data-text="Aucun utilisateur trouvé"
+          @update:model-value="onSelectRequester">
+          <template v-slot:item="{ props, item }">
+            <v-list-item v-bind="props" :subtitle="item.raw.Email"></v-list-item>
+          </template>
+        </v-autocomplete>
+        <v-row dense>
+          <v-col cols="6">
+            <v-text-field v-model="newTicket.Email" label="Email" variant="outlined" density="comfortable" readonly hint="Rempli automatiquement" persistent-hint></v-text-field>
+          </v-col>
+          <v-col cols="6">
+            <v-text-field v-model="newTicket.Departement" label="Département" variant="outlined" density="comfortable"></v-text-field>
+          </v-col>
+        </v-row>
+        <v-row dense>
+          <v-col cols="6">
+            <v-text-field v-model="newTicket.Bureau" label="Bureau" variant="outlined" density="comfortable"></v-text-field>
+          </v-col>
+          <v-col cols="6">
+            <v-select v-model="newTicket.Assigne" :items="technicianEmails" label="Assigner à" variant="outlined" density="comfortable"></v-select>
+          </v-col>
+        </v-row>
+      </v-card-text>
+      <v-card-actions class="pa-4 pt-0">
+        <v-spacer></v-spacer>
+        <v-btn variant="text" @click="newTicketDialog=false">Annuler</v-btn>
+        <v-btn color="primary" @click="submitNewTicket" :loading="savingTicket">Créer le ticket</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <!-- TICKET DETAIL DRAWER -->
+  <v-navigation-drawer v-model="ticketDrawer" location="right" temporary width="480" class="ticket-detail-drawer">
+    <div v-if="selectedTicket" class="pa-5">
+      <div class="d-flex align-center justify-space-between mb-1">
+        <span class="text-caption text-medium-emphasis">{{ selectedTicket.ID }}</span>
+        <v-btn icon="mdi-close" size="small" variant="text" @click="ticketDrawer=false"></v-btn>
+      </div>
+      <div class="text-h6 font-weight-bold mb-3">{{ selectedTicket.Titre }}</div>
+
+      <v-row dense class="mb-2">
+        <v-col cols="6">
+          <v-select :model-value="selectedTicket.Statut" :items="meta.statuses" label="Statut" variant="outlined" density="compact" @update:model-value="onStatusSelect"></v-select>
+        </v-col>
+        <v-col cols="6">
+          <v-select v-model="selectedTicket.Priorite" :items="meta.priorities" label="Priorité" variant="outlined" density="compact" @update:model-value="patchTicket({Priorite: selectedTicket.Priorite})"></v-select>
+        </v-col>
+      </v-row>
+
+      <v-select v-model="selectedTicket.Assigne" :items="technicianEmails" label="Assigné à" variant="outlined" density="compact" class="mb-2" clearable @update:model-value="patchTicket({Assigne: selectedTicket.Assigne})"></v-select>
+
+      <v-card variant="tonal" class="pa-3 mb-3" rounded="lg">
+        <div class="text-body-2 mb-2">{{ selectedTicket.Description }}</div>
+        <v-divider class="my-2"></v-divider>
+        <div class="d-flex flex-wrap ga-4 text-caption text-medium-emphasis">
+          <span><v-icon size="14">mdi-tag-outline</v-icon> {{ selectedTicket.Categorie }}</span>
+          <span><v-icon size="14">mdi-account-outline</v-icon> {{ selectedTicket.Demandeur }}</span>
+          <span><v-icon size="14">mdi-office-building-outline</v-icon> {{ selectedTicket.Departement || '—' }}</span>
+          <span><v-icon size="14">mdi-clock-outline</v-icon> {{ formatDate(selectedTicket.DateCreation) }}</span>
+        </div>
+        <div class="mt-2">
+          <v-chip size="small" :color="selectedTicket.SLA_Statut === 'Dépassé' ? 'error' : 'success'" variant="flat">
+            SLA : {{ selectedTicket.SLA_Statut }} — échéance {{ formatDate(selectedTicket.SLA_Echeance) }}
+          </v-chip>
+        </div>
+      </v-card>
+
+      <div class="text-subtitle-2 font-weight-bold mb-2">Commentaires</div>
+      <div style="max-height:260px; overflow-y:auto" class="mb-3">
+        <div v-for="c in ticketComments" :key="c.ID" class="mb-3">
+          <div class="d-flex justify-space-between">
+            <span class="text-body-2 font-weight-bold">{{ c.Auteur }}</span>
+            <span class="text-caption text-medium-emphasis">{{ formatDate(c.Date) }}</span>
+          </div>
+          <div class="text-body-2">{{ c.Message }}</div>
+        </div>
+        <div v-if="ticketComments.length === 0" class="text-caption text-medium-emphasis">Aucun commentaire pour le moment.</div>
+      </div>
+
+      <v-textarea v-model="newComment" placeholder="Ajouter un commentaire..." variant="outlined" density="compact" rows="2" hide-details class="mb-2"></v-textarea>
+      <v-btn color="primary" size="small" block @click="submitComment" :loading="savingComment">Envoyer</v-btn>
+    </div>
+  </v-navigation-drawer>
+
+  <!-- STATUS CHANGE EMAIL CONFIRMATION -->
+  <v-dialog v-model="statusEmailDialog.show" max-width="440" persistent>
+    <v-card class="pa-2" rounded="lg">
+      <v-card-title class="font-weight-bold d-flex align-center">
+        <v-icon color="primary" class="mr-2">mdi-email-outline</v-icon>
+        Notifier le demandeur ?
+      </v-card-title>
+      <v-card-text>
+        Le statut du ticket va passer à
+        <v-chip size="small" :color="statusColor(statusEmailDialog.newStatus)" variant="tonal" class="rounded-chip mx-1">{{ statusEmailDialog.newStatus }}</v-chip>.
+        <br><br>
+        Souhaitez-vous envoyer un email de notification au demandeur pour l'informer de ce changement ?
+        <v-select
+          v-model="statusEmailCC"
+          :items="requesterUsers"
+          item-title="Nom"
+          item-value="Email"
+          label="Mettre en copie (optionnel)"
+          variant="outlined"
+          density="comfortable"
+          multiple
+          chips
+          closable-chips
+          clearable
+          class="mt-2"
+        >
+          <template v-slot:item="{ props, item }">
+            <v-list-item v-bind="props" :subtitle="item.raw.Email"></v-list-item>
+          </template>
+        </v-select>
+      </v-card-text>
+      <v-card-actions class="flex-wrap ga-2 px-4 pb-4">
+        <v-btn variant="text" @click="cancelStatusChange">Annuler</v-btn>
+        <v-spacer></v-spacer>
+        <v-btn variant="outlined" @click="confirmStatusChange(false)">Ne pas notifier</v-btn>
+        <v-btn color="primary" prepend-icon="mdi-send-outline" @click="confirmStatusChange(true)">Envoyer l'email</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+</div>

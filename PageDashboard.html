@@ -1,0 +1,199 @@
+<div v-show="page === 'dashboard'" class="fade-in">
+
+  <!-- SÉLECTEUR D'UTILISATEUR -->
+  <v-row class="mt-0 mb-n2" v-if="canSwitchDashboardUser">
+  <v-col cols="12">
+    <v-card class="section-card pa-3 d-flex align-center flex-wrap" elevation="0">
+      <span class="text-body-2 text-medium-emphasis mr-3">Vue des statistiques :</span>
+
+      <v-select
+        v-model="selectedDashboardUser"
+        :items="dashboardUserItems"
+        item-title="title"
+        item-value="value"
+        density="comfortable"
+        variant="outlined"
+        hide-details
+        style="max-width: 350px"
+        class="rounded-chip"
+      >
+        <template v-slot:prepend-inner>
+          <v-icon size="18" color="primary">mdi-account-circle-outline</v-icon>
+        </template>
+      </v-select>
+
+      <v-spacer></v-spacer>
+
+      <v-chip v-if="selectedDashboardUser !== currentUserEmail" size="small" color="info" variant="tonal">
+        Consultation du tableau de {{ (dashboardUserItems.find(u => u.value === selectedDashboardUser) || {}).title }}
+      </v-chip>
+    </v-card>
+  </v-col>
+</v-row>
+
+  <!-- KPI CARDS -->
+  <v-row>
+    <v-col cols="12" sm="6" md="3" v-for="kpi in dashboardKpiCards" :key="kpi.label">
+      <v-card class="kpi-card pa-4" elevation="0">
+        <div class="d-flex align-center justify-space-between mb-3">
+          <div class="kpi-icon-box" :style="{ background: kpi.bg }">
+            <v-icon :color="kpi.color" size="22">{{ kpi.icon }}</v-icon>
+          </div>
+          <v-chip v-if="kpi.chip" size="x-small" :color="kpi.chipColor" variant="flat" class="rounded-chip">{{ kpi.chip }}</v-chip>
+        </div>
+        <div class="text-h4 font-weight-bold">{{ kpi.value }}</div>
+        <div class="text-body-2 text-medium-emphasis mt-1">{{ kpi.label }}</div>
+      </v-card>
+    </v-col>
+  </v-row>
+
+  <!-- CHARTS ROW 1 -->
+  <v-row class="mt-2">
+    <v-col cols="12" md="8">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="d-flex align-center justify-space-between mb-2 flex-wrap ga-2">
+          <span class="text-subtitle-1 font-weight-bold">Tendance des tickets ({{ dashboardStats.trendMonthLabel }})</span>
+
+          <v-btn-toggle
+            v-model="trendPeriod"
+            density="compact"
+            mandatory
+            color="primary"
+            variant="outlined"
+            divided
+            :disabled="trendLoading"
+          >
+            <v-btn value="14d" size="small">14 j</v-btn>
+            <v-btn value="month" size="small">Mois</v-btn>
+            <v-btn value="max" size="small">Max</v-btn>
+          </v-btn-toggle>
+        </div>
+
+        <div style="height:280px; position:relative">
+          <div
+            v-if="trendLoading"
+            class="d-flex align-center justify-center"
+            style="position:absolute; inset:0; background:rgba(255,255,255,0.7); z-index:1; border-radius:8px"
+          >
+            <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+          </div>
+          <canvas id="chartTrend"></canvas>
+        </div>
+      </v-card>
+    </v-col>
+
+    <v-col cols="12" md="4">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-2">Répartition par statut</div>
+        <div style="height:280px; position:relative">
+          <!-- AJOUT -->
+          <div
+            v-if="statsLoading"
+            class="d-flex align-center justify-center"
+            style="position:absolute; inset:0; background:rgba(255,255,255,0.7); z-index:1; border-radius:8px"
+          >
+            <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+          </div>
+          <canvas id="chartStatus"></canvas>
+        </div>
+      </v-card>
+    </v-col>
+  </v-row>
+
+  <!-- CHARTS ROW 2 -->
+  <v-row class="mt-2">
+    <v-col cols="12" md="4">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-2">Par priorité</div>
+        <div style="height:260px; position:relative">
+          <!-- AJOUT -->
+          <div
+            v-if="statsLoading"
+            class="d-flex align-center justify-center"
+            style="position:absolute; inset:0; background:rgba(255,255,255,0.7); z-index:1; border-radius:8px"
+          >
+            <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+          </div>
+          <canvas id="chartPriority"></canvas>
+        </div>
+      </v-card>
+    </v-col>
+
+    <v-col cols="12" md="4">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-2">Par catégorie</div>
+        <div style="height:260px; position:relative">
+          <!-- AJOUT -->
+          <div
+            v-if="statsLoading"
+            class="d-flex align-center justify-center"
+            style="position:absolute; inset:0; background:rgba(255,255,255,0.7); z-index:1; border-radius:8px"
+          >
+            <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+          </div>
+          <canvas id="chartCategory"></canvas>
+        </div>
+      </v-card>
+    </v-col>
+
+    <v-col cols="12" md="4">
+      <!-- "Charge par ICT member" reste global, pas de loading lié à selectedDashboardUser -->
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-3">Charge par ICT member</div>
+        <div v-if="Object.keys(agentWorkload||{}).length === 0" class="text-body-2 text-medium-emphasis">
+          Aucun ticket assigné actuellement.
+        </div>
+        <div v-for="(count, agent) in agentWorkload" :key="agent" class="mb-3">
+          <div class="d-flex justify-space-between text-body-2 mb-1">
+            <span>{{ agent }}</span><span class="font-weight-bold">{{ count }}</span>
+          </div>
+          <v-progress-linear :model-value="(count / maxAgentLoad) * 100" height="8" rounded color="primary"></v-progress-linear>
+        </div>
+      </v-card>
+    </v-col>
+  </v-row>
+
+  <!-- RECENT TICKETS -->
+  <v-row class="mt-2">
+    <v-col cols="12">
+      <v-card class="section-card" elevation="0">
+        <v-card-item>
+          <div class="d-flex align-center justify-space-between">
+            <span class="text-subtitle-1 font-weight-bold">Tickets récents</span>
+            <v-btn variant="text" size="small" color="primary" @click="page='tickets'">Voir tout <v-icon end size="16">mdi-arrow-right</v-icon></v-btn>
+          </div>
+        </v-card-item>
+        <div class="custom-table-wrapper">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>ID</th><th>Titre</th><th>Priorité</th><th>Statut</th><th>SLA</th><th>Demandeur</th><th></th>
+              </tr>
+            </thead>
+            <tbody v-if="!dataReady">
+              <tr><td colspan="7" class="text-center py-8 text-medium-emphasis">Chargement...</td></tr>
+            </tbody>
+            <tbody v-else>
+              <tr v-for="t in filteredTickets.slice(0,6)" :key="t.ID" class="is-clickable" @click="page='tickets';openTicket(t)">
+                <td class="text-caption">{{ t.ID }}</td>
+                <td>{{ t.Titre }}</td>
+                <td><v-chip size="small" :color="priorityColor(t.Priorite)" variant="flat" class="rounded-chip">{{ t.Priorite }}</v-chip></td>
+                <td><v-chip size="small" :color="statusColor(t.Statut)" variant="tonal" class="rounded-chip">{{ t.Statut }}</v-chip></td>
+                <td>
+                  <v-chip size="small" :color="t.SLA_Statut === 'Dépassé' ? 'error' : (t.SLA_Statut==='Respecté' ? 'success':'default')" variant="text">
+                    {{ t.SLA_Statut }}
+                  </v-chip>
+                </td>
+                <td>{{ t.Demandeur }}</td>
+                <td><v-icon size="18">mdi-chevron-right</v-icon></td>
+              </tr>
+              <tr v-if="tickets.length === 0">
+                <td colspan="7" class="text-center py-8 text-medium-emphasis">Aucun ticket pour le moment.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </v-card>
+    </v-col>
+  </v-row>
+</div>

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <title>UNFPA ICT Dashboard</title>
+
+  <!-- Fonts & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css" rel="stylesheet">
+
+  <!-- Vuetify 3 -->
+  <link href="https://cdn.jsdelivr.net/npm/vuetify@3.6.4/dist/vuetify.min.css" rel="stylesheet">
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+  <!-- Rich editor -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.5/purify.min.js"></script>
+
+  <?!= include('Stylesheet'); ?>
+</head>
+<body>
+  <div id="app">
+    <v-app :theme="theme">
+      <v-progress-linear v-if="loading" indeterminate color="primary" class="app-loader"></v-progress-linear>
+
+      <!-- ===================== NAVIGATION DRAWER ===================== -->
+      <v-navigation-drawer v-model="drawer" :rail="rail" permanent color="surface" class="app-drawer" border="0">
+        <div class="drawer-brand pa-4 d-flex align-center" :class="rail ? 'justify-center' : ''">
+          <v-avatar size="36" color="primary" class="flex-shrink-0">
+            <v-icon icon="mdi-headset" color="white" size="20"></v-icon>
+          </v-avatar>
+          <div v-if="!rail" class="ml-3 overflow-hidden">
+            <div class="text-subtitle-2 font-weight-bold text-truncate">UNFPA ICT</div>
+            <div class="text-caption text-medium-emphasis text-truncate">Support Dashboard</div>
+          </div>
+        </div>
+
+        <v-divider></v-divider>
+
+        <v-list nav density="comfortable" class="pa-2" v-if="dataReady">
+          <v-list-item
+            v-for="item in navItems" :key="item.value"
+            :value="item.value" :active="page === item.value"
+            @click="page = item.value" rounded="lg" class="mb-1"
+            :prepend-icon="item.icon" :title="rail ? '' : item.title">
+            <template v-slot:append v-if="!rail">
+              <v-progress-circular v-if="tabLoading[item.value]" indeterminate size="16" width="2" color="primary"></v-progress-circular>
+              <v-chip v-else-if="item.badge" size="x-small" :color="item.badgeColor || 'primary'" variant="flat">{{ item.badge }}</v-chip>
+            </template>
+          </v-list-item>
+        </v-list>
+
+        <!-- AJOUT : squelette pendant le chargement initial, pour éviter un menu vide brut -->
+        <div v-else class="d-flex flex-column ga-2 pa-2">
+          <v-skeleton-loader type="list-item" v-for="n in 4" :key="n"></v-skeleton-loader>
+        </div>
+
+        <template v-slot:append>
+          <v-divider></v-divider>
+          <v-list nav density="comfortable" class="pa-2">
+            <v-list-item @click="rail = !rail" rounded="lg" :prepend-icon="rail ? 'mdi-chevron-right' : 'mdi-chevron-left'" :title="rail ? '' : 'Réduire'"></v-list-item>
+          </v-list>
+        </template>
+      </v-navigation-drawer>
+
+      <!-- ===================== TOP APP BAR ===================== -->
+      <v-app-bar flat color="surface" class="app-topbar" height="64">
+        <v-app-bar-nav-icon @click="drawer = !drawer" class="d-md-none"></v-app-bar-nav-icon>
+        <v-toolbar-title class="text-h6 font-weight-bold">{{ currentPageTitle }}</v-toolbar-title>
+
+        <v-spacer></v-spacer>
+
+        <v-text-field
+          v-model="searchQuery" @input="onSearch" placeholder="Recherche globale..."
+          prepend-inner-icon="mdi-magnify" variant="solo-filled" flat density="compact"
+          hide-details single-line class="search-field mr-4" style="max-width:320px"
+          clearable>
+        </v-text-field>
+
+        <v-menu v-if="searchResults" v-model="searchMenu" :close-on-content-click="false" location="bottom">
+          <template v-slot:activator="{}"></template>
+        </v-menu>
+
+        <v-btn icon variant="text" @click="toggleTheme" class="mr-1">
+          <v-icon>{{ theme === 'dark' ? 'mdi-weather-sunny' : 'mdi-weather-night' }}</v-icon>
+          <v-tooltip activator="parent" location="bottom">Basculer le thème</v-tooltip>
+        </v-btn>
+
+        <v-btn icon variant="text" @click="page='tickets'" class="mr-1">
+          <v-badge :content="mySlaBreachesCount" color="error" v-if="mySlaBreachesCount > 0">
+            <v-icon>mdi-bell-outline</v-icon>
+          </v-badge>
+          <v-icon v-else>mdi-bell-outline</v-icon>
+        </v-btn>
+
+        <v-menu>
+          <template v-slot:activator="{ props }">
+            <v-avatar
+              v-bind="props"
+              size="34"
+              class="user-avatar ml-4 mr-6"
+            >
+              <v-img
+                :src="currentUser.photoUrl"
+                alt="Avatar utilisateur"
+                cover
+                referrerpolicy="no-referrer"
+              />
+            </v-avatar>
+          </template>
+          <v-list density="compact" min-width="220">
+            <v-list-item :subtitle="meta.currentUser.Email">
+              <v-list-item-title class="font-weight-bold">{{ currentUser.name }}</v-list-item-title>
+            </v-list-item>
+            <v-divider class="my-1"></v-divider>
+            <v-list-item prepend-icon="mdi-shield-account" :title="'Rôle : ' + meta.currentUser.Role"></v-list-item>
+            <v-list-item prepend-icon="mdi-cog-outline" title="Paramètres" @click="page='settings'"></v-list-item>
+          </v-list>
+        </v-menu>
+      </v-app-bar>
+
+      <!-- ===================== MAIN CONTENT ===================== -->
+      <v-main class="app-main">
+        <v-container fluid class="pa-4 pa-md-6">
+
+          <!-- AJOUT : écran d'attente unique, affiché tant que le rôle et les données initiales ne sont pas résolus -->
+          <div
+            v-if="!dataReady"
+            class="d-flex flex-column align-center justify-center"
+            style="min-height: 60vh"
+          >
+            <v-progress-circular indeterminate color="primary" size="48"></v-progress-circular>
+            <span class="text-body-2 text-medium-emphasis mt-3">Chargement de votre espace...</span>
+          </div>
+
+          <!-- AJOUT : tout le contenu existant est enveloppé, caché (mais monté) tant que dataReady est faux -->
+          <div v-show="dataReady">
+
+            <!-- Global search results overlay -->
+            <v-card v-if="searchResults && searchQuery" class="mb-4 search-results-card" elevation="2">
+              <v-card-text>
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <span class="text-subtitle-2 font-weight-bold">Résultats pour "{{ searchQuery }}"</span>
+                  <v-btn icon="mdi-close" size="small" variant="text" @click="searchQuery=''; searchResults=null"></v-btn>
+                </div>
+                <div v-if="!searchHasResults" class="text-medium-emphasis text-body-2">Aucun résultat.</div>
+                <v-row v-else dense>
+                  <v-col cols="12" md="3" v-if="searchResults.tickets.length">
+                    <div class="text-caption text-medium-emphasis mb-1">TICKETS</div>
+                    <v-list density="compact">
+                      <v-list-item v-for="t in searchResults.tickets" :key="t.ID" :title="t.Titre" :subtitle="t.ID" @click="openTicket(t); searchQuery=''"></v-list-item>
+                    </v-list>
+                  </v-col>
+                  <v-col cols="12" md="3" v-if="searchResults.assets.length">
+                    <div class="text-caption text-medium-emphasis mb-1">ACTIFS</div>
+                    <v-list density="compact">
+                      <v-list-item v-for="a in searchResults.assets" :key="a.ID" :title="a.Marque + ' ' + a.Modele" :subtitle="a.NumeroSerie" @click="page='assets'; searchQuery=''"></v-list-item>
+                    </v-list>
+                  </v-col>
+                  <v-col cols="12" md="3" v-if="searchResults.users.length">
+                    <div class="text-caption text-medium-emphasis mb-1">UTILISATEURS</div>
+                    <v-list density="compact">
+                      <v-list-item v-for="u in searchResults.users" :key="u.ID" :title="u.Nom" :subtitle="u.Email" @click="page='users'; searchQuery=''"></v-list-item>
+                    </v-list>
+                  </v-col>
+                  <v-col cols="12" md="3" v-if="searchResults.articles.length">
+                    <div class="text-caption text-medium-emphasis mb-1">BASE DE CONNAISSANCES</div>
+                    <v-list density="compact">
+                      <v-list-item v-for="a in searchResults.articles" :key="a.ID" :title="a.Titre" @click="page='kb'; searchQuery=''"></v-list-item>
+                    </v-list>
+                  </v-col>
+                </v-row>
+              </v-card-text>
+            </v-card>
+
+            <?!= include('PageDashboard'); ?>
+            <?!= include('PageTickets'); ?>
+            <?!= include('PageDashboardAssets'); ?>
+            <?!= include('PageAssets'); ?>
+            <?!= include('PageUsers'); ?>
+            <?!= include('PageKB'); ?>
+            <?!= include('PageReports'); ?>
+            <?!= include('PageSettings'); ?>
+
+          </div>
+
+        </v-container>
+      </v-main>
+
+      <v-snackbar v-model="snackbar.show" :color="snackbar.color" timeout="3500" location="bottom right">
+        {{ snackbar.text }}
+      </v-snackbar>
+    </v-app>
+  </div>
+
+  <script src="https://unpkg.com/vue@3.4.31/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vuetify@3.6.4/dist/vuetify.min.js"></script>
+  <?!= include('JavaScript'); ?>
+</body>
+</html>

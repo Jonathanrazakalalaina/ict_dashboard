@@ -1,0 +1,1512 @@
+<script>
+const { createApp, ref, reactive, computed, onMounted, watch, nextTick } = Vue;
+const { createVuetify, useDisplay } = Vuetify;
+
+const vuetify = createVuetify({
+  theme: {
+    defaultTheme: 'light',
+    themes: {
+      light: {
+        colors: {
+          primary: '#0b6cb3',
+          secondary: '#1e88c7',
+          background: '#f4f6f9',
+          surface: '#ffffff',
+          success: '#2e7d32',
+          error: '#c62828',
+          warning: '#ef6c00'
+        }
+      },
+      dark: {
+        colors: {
+          primary: '#3fa9e6',
+          secondary: '#1e88c7',
+          background: '#0f1620',
+          surface: '#161f2c',
+          success: '#66bb6a',
+          error: '#ef5350',
+          warning: '#ffa726'
+        }
+      }
+    }
+  }
+});
+
+const App = {
+  setup() {
+    /* ---------------- CORE STATE ---------------- */
+    const loading = ref(true);
+    const dataReady = ref(false); // guards v-table rendering until first data fetch resolves
+    const theme = ref(localStorage.getItem('unfpa_theme') || 'dark');
+    const darkMode = ref(theme.value === 'dark');
+    const drawer = ref(true);
+    const rail = ref(false);
+    const page = ref('dashboard');
+
+    const meta = reactive({ priorities:[], statuses:[], categories:[], assetTypes:[], assetCategories:[], regions:[], roles:[], currentUser:{Nom:'', Email:'', Role:''}, orgName:'',  });
+    // stats : version GLOBALE (badge de navigation, page Rapports). Reste inchangée.
+    const stats = reactive({ totalTickets:0, openTickets:0, resolvedThisMonth:0, resolvedTotal:0, slaBreaches:0, totalAssets:0, totalUsers:0, unassigned:0, byStatus:{}, byPriority:{}, byCategory:{}, trend:[], trendMonthLabel:'', agentWorkload:{} });
+    // Période affichée par le graphique de tendance : '14d' | 'month' (défaut) | 'max'
+    const trendPeriod = ref('month');
+    const trendLoading = ref(false);
+    const statsLoading = ref(false);
+    const tabLoading = reactive({ assets:false, kb:false, users:false, settings:false, reports:false, assetsDashboard:false });
+
+    // dashboardStats : version FILTRÉE par agent (Assigne), affichée sur la page Tableau de bord.
+    const dashboardStats = reactive({ totalTickets:0, openTickets:0, resolvedThisMonth:0, resolvedTotal:0, slaBreaches:0, totalAssets:0, totalUsers:0, unassigned:0, byStatus:{}, byPriority:{}, byCategory:{}, trend:[], trendMonthLabel:'', agentWorkload:{} });
+
+    // Email de l'agent actuellement affiché dans le dashboard. Par défaut : l'utilisateur
+    // connecté. Peut basculer vers un autre Admin/ICT via le dropdown.
+    const selectedDashboardUser = ref('');
+
+    const userInfo = ref([]);
+    const tickets = ref([]);
+    const assets = ref([]);
+    const users = ref([]);
+    const articles = ref([]);
+    const auditLog = ref([]);
+    const transfers = ref([]); // asset loan/transfer history
+
+    // Utilisateur connecté (objet { name, photoUrl, email, loggedIn } renvoyé par getUserInfo()).
+    const currentUser = ref(userInfo);
+
+    // L'objet renvoyé par getUserInfo() n'a pas de Role ; on le retrouve en croisant
+    // l'email connecté avec la table Users (chargée dans users.value).
+    const currentUserEmail = computed(() => (currentUser.value && currentUser.value.email) || '');
+    const currentUserName  = computed(() => (currentUser.value && currentUser.value.name) || '');
+    const currentUserRole = computed(() => {
+    const email = (currentUserEmail.value || '').trim().toLowerCase();
+      const u = users.value.find(u => (u.Email || '').trim().toLowerCase() === email); // users.value est [] au tout début
+      return u ? u.Role : ''; // → '' tant que loadAll() n'a pas résolu
+    });
+
+    const canSwitchDashboardUser = computed(() => myPermissions.SWITCH_DASHBOARD_USER);
+    const dashboardAssignableUsers = computed(() =>
+      users.value.filter(u => u.Role === 'Admin' || u.Role === 'ICT')
+    );
+
+    // Items du v-select : value = email (c'est ce que stocke t.Assigne), title = nom affiché
+    const dashboardUserItems = computed(() => {
+      const others = dashboardAssignableUsers.value
+        .filter(u => u.Email !== currentUserEmail.value)
+        .map(u => ({ title: u.Nom, value: u.Email }))
+        .sort((a, b) => a.title.localeCompare(b.title));
+      return [{ title: `Moi (${currentUserName.value})`, value: currentUserEmail.value }, ...others];
+    });
+
+    const snackbar = reactive({ show:false, text:'', color:'success' });
+    const confirmDialog = reactive({ show:false, message:'', action:()=>{} });
+    
+
+    /* ---------------- NAVIGATION ---------------- */
+    const navItems = computed(() => [
+      ...(currentUserRole.value === 'Admin' || currentUserRole.value === 'ICT' ? [{ title:'Tableau de bord', value:'dashboard', icon:'mdi-view-dashboard-outline' }] : []),
+      ...(currentUserRole.value === 'Admin' || currentUserRole.value === 'ICT' ? [{ title:'Tickets', value:'tickets', icon:'mdi-ticket-confirmation-outline', badge: dashboardStats.openTickets || null, badgeColor:'primary' }] : []),
+      ...(currentUserRole.value === 'Admin' || currentUserRole.value === 'Asset focal point' ? [{ title:'Dashboard actifs', value:'assetsDashboard', icon:'mdi-chart-donut' }] : []),
+      { title:'Inventaire', value:'assets', icon:'mdi-clipboard-list-outline' },
+      ...(currentUserRole.value === 'Admin' ? [{ title:'Utilisateurs', value:'users', icon:'mdi-account-group-outline' }] : []),
+      { title:'Base de connaissances', value:'kb', icon:'mdi-book-open-variant-outline' },
+      ...(currentUserRole.value === 'Admin' || currentUserRole.value === 'ICT' ? [{ title:'Rapports', value:'reports', icon:'mdi-chart-box-outline' }] : []),
+      { title:'Paramètres', value:'settings', icon:'mdi-cog-outline' }
+    ]);
+    const pageTitles = { dashboard:'Tableau de bord', tickets:'Gestion des tickets',assetsDashboard:'Dashboard des actifs', assets:'Inventaire', users:'Annuaire utilisateurs', kb:'Base de connaissances', reports:'Rapports & Analytique', settings:'Paramètres' };
+    const currentPageTitle = computed(() => pageTitles[page.value] || 'UNFPA ICT');
+
+    function toggleTheme() {
+      theme.value = theme.value === 'dark' ? 'light' : 'dark';
+      darkMode.value = theme.value === 'dark';
+      localStorage.setItem('unfpa_theme', theme.value);
+    }
+
+    const userInitials = computed(() => initials(meta.currentUser.Nom));
+    function initials(name) {
+      if (!name) return '?';
+      return name.split(' ').filter(Boolean).slice(0,2).map(w => w[0].toUpperCase()).join('');
+    }
+
+    function notifyUser(text, color) { snackbar.text = text; snackbar.color = color || 'success'; snackbar.show = true; }
+    function formatDate(d) {
+      if (!d) return '—';
+      const dt = new Date(d);
+      if (isNaN(dt)) return d;
+      return dt.toLocaleDateString('fr-FR', { day:'2-digit', month:'2-digit', year:'numeric' }) + ' ' + dt.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' });
+    }
+
+    /* ---------------- SERVER CALL WRAPPER ---------------- */
+    function call(fnName, ...args) {
+      return new Promise((resolve, reject) => {
+        google.script.run
+          .withSuccessHandler((result) => resolve(result))
+          .withFailureHandler((err) => {
+            const message = err && err.message ? err.message : String(err || 'Erreur inconnue');
+            if (!message.includes('Accès refusé') && !message.includes('Forbidden')) {
+              notifyUser('Erreur : ' + message, 'error');
+            }
+            reject(err);
+          })
+          [fnName](...args);
+      });
+    }
+
+    /* ---------------- LOADERS ---------------- */
+    // Sanitize any array coming back from Apps Script: drop null/undefined
+    // entries and anything without a stable ID, so v-for :key bindings can
+    // never be evaluated against an undefined item.
+    function sanitizeList(list) {
+      return (Array.isArray(list) ? list : []).filter(item => item && item.ID);
+    }
+
+
+    async function loadDashboardStats() {
+      if (!selectedDashboardUser.value) return;
+      statsLoading.value = true;
+      try {
+        const s = await call('getDashboardStats', selectedDashboardUser.value);
+        Object.assign(dashboardStats, s);
+        await nextTick();
+        renderStatusChart(); renderPriorityChart(); renderCategoryChart();
+      } finally {
+        statsLoading.value = false;
+      }
+    }
+
+    // Appelée au changement de période ET au changement d'utilisateur.
+    async function loadTrend() {
+      if (!selectedDashboardUser.value) return;
+      trendLoading.value = true;
+      try {
+        const t = await call('getTicketTrend', selectedDashboardUser.value, trendPeriod.value);
+        dashboardStats.trend = t.trend;
+        dashboardStats.trendMonthLabel = t.trendMonthLabel;
+        await nextTick();
+        renderTrendChart();
+      } finally {
+        trendLoading.value = false;
+      }
+    }
+
+    // PERMISSIONS
+
+    const myPermissions = reactive({ MANAGE_USERS:false, MANAGE_LISTS:false, SWITCH_DASHBOARD_USER:false });
+
+    const loadedFlags = reactive({ assets:false, articles:false, transfers:false, settingsPage:false, adminUsers:false, editableLists:false, assetsDashboard:false });
+
+    async function ensureAssetsLoaded() {
+      if (loadedFlags.assets) return;
+      tabLoading.assets = true;
+      try {
+        const [a, tr] = await Promise.all([call('getAllAssets'), call('getAllTransfers')]);
+        assets.value = sanitizeList(a);
+        transfers.value = sanitizeList(tr);
+        loadedFlags.assets = true; loadedFlags.transfers = true;
+      } finally {
+        tabLoading.assets = false;
+      }
+    }
+    async function ensureTransfersLoaded() {
+      if (loadedFlags.transfers) return;
+      transfers.value = sanitizeList(await call('getAllTransfers'));
+      loadedFlags.transfers = true;
+    }
+
+    async function ensureArticlesLoaded() {
+      if (loadedFlags.articles) return;
+      tabLoading.kb = true;
+      try {
+        articles.value = sanitizeList(await call('getAllArticles'));
+        loadedFlags.articles = true;
+      } finally {
+        tabLoading.kb = false;
+      }
+    }
+
+    async function ensureSettingsPageLoaded() {
+      if (loadedFlags.settingsPage) return;
+      tabLoading.settings = true;
+      try {
+        const [s, log] = await Promise.all([call('getAllSettings'), call('getAuditLog')]);
+        editableSettings.value = s;
+        auditLog.value = sanitizeList(log);
+        loadedFlags.settingsPage = true;
+
+        if (myPermissions.MANAGE_LISTS && !loadedFlags.editableLists) {
+          Object.assign(editableLists, await call('getAllEditableLists'));
+          loadedFlags.editableLists = true;
+        }
+      } finally {
+        tabLoading.settings = false;
+      }
+    }
+
+    async function ensureAdminUsersLoaded() {
+      if (!myPermissions.MANAGE_USERS || loadedFlags.adminUsers) return;
+      tabLoading.users = true;
+      try {
+        adminUsersDirectory.value = sanitizeList(await call('getAllUsers'));
+        loadedFlags.adminUsers = true;
+      } finally {
+        tabLoading.users = false;
+      }
+    }
+
+
+    const adminUsersDirectory = ref([]);
+
+    watch(page, async (p) => {
+      const allowedValues = navItems.value.map(i => i.value);
+      if (!allowedValues.includes(p)) {
+        page.value = navItems.value[0].value;
+        return;
+      }
+      await nextTick();
+      if (p === 'dashboard') { renderTrendChart(); renderStatusChart(); renderPriorityChart(); renderCategoryChart(); }
+      if (p === 'assetsDashboard') { await ensureAssetAnalyticsLoaded(); await ensureTransfersLoaded(); }
+      if (p === 'assets') { await ensureAssetsLoaded(); }
+      if (p === 'kb') { await ensureArticlesLoaded(); }
+      if (p === 'users') { await ensureAdminUsersLoaded(); }
+      if (p === 'settings') { await ensureSettingsPageLoaded(); }
+      if (p === 'reports') {
+        tabLoading.reports = true;
+        try {
+          await ensureTransfersLoaded();
+          renderAgentAllChart(); renderDeptChart(); renderRequesterChart();
+        } finally {
+          tabLoading.reports = false;
+        }
+      }
+    });
+    
+
+
+    watch(selectedDashboardUser, async () => {
+      await Promise.all([loadDashboardStats(), loadTrend()]);
+    });
+    watch(trendPeriod, loadTrend);
+
+    async function loadAll() {
+      loading.value = true;
+      dataReady.value = false;
+      try {
+        const [us, m, u, perms] = await Promise.all([
+          call('getUserInfo'),
+          call('getMeta'),
+          call('getUserDirectoryLite'),
+          call('getMyPermissions')
+        ]);
+
+        userInfo.value = us || {};
+        Object.assign(meta, m || {});
+        users.value = sanitizeList(u);
+        Object.assign(myPermissions, perms || {});
+
+        if (currentUserRole.value === 'Asset focal point') {
+          page.value = 'assetsDashboard';
+          dataReady.value = true;
+          return;
+        }
+
+        const [ticketRows] = await Promise.all([
+          call('getAllTickets')
+        ]);
+
+        tickets.value = sanitizeList(ticketRows);
+        if (!selectedDashboardUser.value) selectedDashboardUser.value = currentUserEmail.value;
+        await Promise.all([loadDashboardStats(), loadTrend()]);
+        dataReady.value = true;
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    async function loadAuditLog() { auditLog.value = sanitizeList(await call('getAuditLog')); }
+
+    async function refreshStatsAndTickets() {
+      const [t, s] = await Promise.all([call('getAllTickets'), call('getDashboardStats')]);
+      tickets.value = sanitizeList(t); Object.assign(stats, s);
+      // MODIFIÉ : recharge aussi les deux morceaux du dashboard filtré
+      await Promise.all([loadDashboardStats(), loadTrend()]);
+      await nextTick();
+      renderAgentAllChart(); renderDeptChart();
+    }
+
+    /* ---------------- SEARCH ---------------- */
+    const searchQuery = ref('');
+    const searchResults = ref(null);
+    const searchMenu = ref(false);
+    let searchTimer = null;
+    function onSearch() {
+      clearTimeout(searchTimer);
+      if (!searchQuery.value) { searchResults.value = null; return; }
+      searchTimer = setTimeout(async () => {
+        const r = await call('globalSearch', searchQuery.value);
+        searchResults.value = {
+          tickets: sanitizeList(r && r.tickets),
+          assets: sanitizeList(r && r.assets),
+          users: sanitizeList(r && r.users),
+          articles: sanitizeList(r && r.articles)
+        };
+      }, 350);
+    }
+    const searchHasResults = computed(() => {
+      if (!searchResults.value) return false;
+      const r = searchResults.value;
+      return r.tickets.length + r.assets.length + r.users.length + r.articles.length > 0;
+    });
+
+    /* ---------------- COLOR HELPERS ---------------- */
+    function priorityColor(p) { return { 'Critique':'error','Haute':'warning','Moyenne':'info','Basse':'success' }[p] || 'default'; }
+    function statusColor(s) { return { 'Nouveau':'info','Ouvert':'primary','En cours':'warning','En attente':'secondary','Résolu':'success','Fermé':'default' }[s] || 'default'; }
+    function assetStatusColor(s) { return { 'En service':'success','En stock':'info','En réparation':'warning','Hors service':'error', 'Sorti':'default' }[s] || 'default'; }
+
+    /* ---------------- KPI CARDS ---------------- */
+    // kpiCards : conservée (compatibilité), version GLOBALE.
+    const kpiCards = computed(() => [
+      { label:'Tickets ouverts', value: stats.openTickets, icon:'mdi-ticket-outline', color:'#0b6cb3', bg:'rgba(11,108,179,0.12)', chip: stats.unassigned ? stats.unassigned + ' non assignés' : null, chipColor:'warning' },
+      { label:`Tâches complétées ce mois (${dashboardStats.resolvedTotal} au total)`, value: stats.resolvedThisMonth, icon:'mdi-check-circle-outline', color:'#2e7d32', bg:'rgba(46,125,50,0.12)' },
+      { label:'Dépassements SLA', value: stats.slaBreaches, icon:'mdi-alert-circle-outline', color:'#c62828', bg:'rgba(198,40,40,0.12)', chip: stats.slaBreaches > 0 ? 'Action requise' : null, chipColor:'error' },
+      { label:'Actifs IT gérés', value: stats.totalAssets, icon:'mdi-laptop', color:'#6a1b9a', bg:'rgba(106,27,154,0.12)' }
+    ]);
+
+    // dashboardKpiCards : version FILTRÉE, utilisée par la page Tableau de bord.
+    const dashboardKpiCards = computed(() => [
+      { label:'Tickets ouverts', value: dashboardStats.openTickets, icon:'mdi-ticket-outline', color:'#0b6cb3', bg:'rgba(11,108,179,0.12)' },
+      { label:`Tâches complétées ce mois (${dashboardStats.resolvedTotal} au total)`, value: dashboardStats.resolvedThisMonth, icon:'mdi-check-circle-outline', color:'#2e7d32', bg:'rgba(46,125,50,0.12)' },
+      { label:'Dépassements SLA', value: dashboardStats.slaBreaches, icon:'mdi-alert-circle-outline', color:'#c62828', bg:'rgba(198,40,40,0.12)', chip: dashboardStats.slaBreaches > 0 ? 'Action requise' : null, chipColor:'error' },
+      { label:'Actifs IT gérés', value: dashboardStats.totalAssets, icon:'mdi-laptop', color:'#6a1b9a', bg:'rgba(106,27,154,0.12)' }
+    ]);
+
+    const OPEN_STATUSES_WORKLOAD = ['Nouveau','Ouvert','En cours','En attente'];
+    const agentWorkload = computed(() => {
+      const counts = {};
+      tickets.value.forEach(t => {
+        if (t.Assigne && OPEN_STATUSES_WORKLOAD.indexOf(t.Statut) !== -1) {
+          counts[t.Assigne] = (counts[t.Assigne] || 0) + 1;
+        }
+      });
+      return counts;
+    });
+
+    // MODIFIÉ : maxAgentLoad pointe désormais sur agentWorkload (client) au lieu
+    // de stats.agentWorkload (qui n'est plus jamais peuplé)
+    const maxAgentLoad = computed(() => Math.max(1, ...Object.values(agentWorkload.value)));
+
+    /* ---------------- CHARTS ---------------- */
+    let chartInstances = {};
+    function destroyChart(id) { if (chartInstances[id]) { chartInstances[id].destroy(); delete chartInstances[id]; } }
+    function ctx(id) { const el = document.getElementById(id); return el ? el.getContext('2d') : null; }
+
+    function renderAllCharts() {
+      renderTrendChart(); renderStatusChart(); renderPriorityChart(); renderCategoryChart();
+      renderAgentAllChart(); renderDeptChart();
+    }
+
+    function renderTrendChart() {
+      destroyChart('chartTrend');
+      const c = ctx('chartTrend'); if (!c) return;
+      chartInstances.chartTrend = new Chart(c, {
+        type: 'line',
+        data: { labels: dashboardStats.trend.map(t=>t.day), datasets: [{ label:'Tickets créés', data: dashboardStats.trend.map(t=>t.count), borderColor:'#0b6cb3', backgroundColor:'rgba(11,108,179,0.12)', fill:true, tension:0.35, pointRadius:2 }] },
+        options: {
+          responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{ display:false } },
+          scales:{
+            y:{ beginAtZero:true, ticks:{ precision:0 } },
+            x:{ ticks:{ autoSkip:true, maxTicksLimit:16, maxRotation:0 } }
+          }
+        }
+      });
+    }
+    // Color maps keyed by NAME (not position) so a chart's colors always match the
+    // right label, regardless of the key order Object.keys() returns — that order
+    // isn't guaranteed to survive the google.script.run client-server bridge.
+    const STATUS_COLORS = { 'Nouveau':'#42a5f5', 'Ouvert':'#0b6cb3', 'En cours':'#ffa726', 'En attente':'#ab47bc', 'Résolu':'#66bb6a', 'Fermé':'#9e9e9e' };
+    const PRIORITY_COLORS = { 'Basse':'#66bb6a', 'Moyenne':'#ffca28', 'Haute':'#ff9800', 'Critique':'#e53935' };
+
+    function renderStatusChart() {
+      destroyChart('chartStatus');
+      const c = ctx('chartStatus'); if (!c) return;
+      const order = meta.statuses && meta.statuses.length ? meta.statuses : Object.keys(dashboardStats.byStatus);
+      chartInstances.chartStatus = new Chart(c, {
+        type: 'doughnut',
+        data: { labels: order, datasets:[{ data: order.map(s => dashboardStats.byStatus[s] || 0), backgroundColor: order.map(s => STATUS_COLORS[s] || '#9e9e9e') }] },
+        options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, font:{ size:11 } } } } }
+      });
+    }
+    function renderPriorityChart() {
+      destroyChart('chartPriority');
+      const c = ctx('chartPriority'); if (!c) return;
+      const order = meta.priorities && meta.priorities.length ? meta.priorities : Object.keys(dashboardStats.byPriority);
+      chartInstances.chartPriority = new Chart(c, {
+        type: 'bar',
+        data: { labels: order, datasets:[{ data: order.map(p => dashboardStats.byPriority[p] || 0), backgroundColor: order.map(p => PRIORITY_COLORS[p] || '#9e9e9e') }] },
+        options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 } } } }
+      });
+    }
+    function renderCategoryChart() {
+      destroyChart('chartCategory');
+      const c = ctx('chartCategory'); if (!c) return;
+      const order = meta.categories && meta.categories.length ? meta.categories : Object.keys(dashboardStats.byCategory);
+      chartInstances.chartCategory = new Chart(c, {
+        type: 'polarArea',
+        data: { labels: order, datasets:[{ data: order.map(cat => dashboardStats.byCategory[cat] || 0) }] },
+        options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, font:{ size:10 } } } } }
+      });
+    }
+    function renderAgentAllChart() {
+      destroyChart('chartAgentAll');
+      const c = ctx('chartAgentAll'); if (!c) return;
+      const counts = {};
+      tickets.value.forEach(t => { const key = t.Assigne || 'Non assigné'; counts[key] = (counts[key]||0)+1; });
+      chartInstances.chartAgentAll = new Chart(c, {
+        type: 'bar',
+        data: { labels: Object.keys(counts), datasets:[{ label:'Tickets', data: Object.values(counts), backgroundColor:'#0b6cb3' }] },
+        options: { indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } } }
+      });
+    }
+    function renderDeptChart() {
+      destroyChart('chartDept');
+      const c = ctx('chartDept'); if (!c) return;
+      const counts = {};
+      tickets.value.forEach(t => { const key = t.Departement || 'N/A'; counts[key] = (counts[key]||0)+1; });
+      chartInstances.chartDept = new Chart(c, {
+        type: 'bar',
+        data: { labels: Object.keys(counts), datasets:[{ label:'Tickets', data: Object.values(counts), backgroundColor:'#1e88c7' }] },
+        options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 } } } }
+      });
+    }
+    // Tickets par demandeur (tous les utilisateurs ayant soumis au moins un ticket, triés du plus au moins actif)
+    function renderRequesterChart() {
+      destroyChart('chartRequester');
+      const c = ctx('chartRequester'); if (!c) return;
+      const counts = {};
+      tickets.value.forEach(t => { const key = t.Demandeur || 'Inconnu'; counts[key] = (counts[key]||0)+1; });
+      const sorted = Object.entries(counts).sort((a,b) => b[1]-a[1]);
+      // console.log(sorted)
+      chartInstances.chartRequester = new Chart(c, {
+        type: 'bar',
+        data: { labels: sorted.map(s=>s[0]), datasets:[{ label:'Tickets soumis', data: sorted.map(s=>s[1]), backgroundColor:'#6a1b9a' }] },
+        options: { indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ x:{ beginAtZero:true, ticks:{ precision:0 } } } }
+      });
+    }
+    watch(page, async (p) => {
+      await nextTick();
+      if (p === 'dashboard') { renderTrendChart(); renderStatusChart(); renderPriorityChart(); renderCategoryChart(); }
+      if (p === 'reports') { renderAgentAllChart(); renderDeptChart(); renderRequesterChart(); }
+      if (p === 'settings') loadAuditLog();
+    });
+
+    /* ================= TICKETS ================= */
+    const ticketFilters = reactive({ q:'', statut:'Tous', priorite:'Toutes', categorie:'Toutes' });
+    const OPEN_STATUSES   = ['Nouveau','Ouvert','En cours','En attente','Résolu','Fermé'];
+
+    const filteredTickets = computed(() => tickets.value.filter(t => {
+      if (t.Assigne !== selectedDashboardUser.value) return false;
+      if (ticketFilters.statut !== 'Tous' && t.Statut !== ticketFilters.statut) return false;
+      if (ticketFilters.priorite !== 'Toutes' && t.Priorite !== ticketFilters.priorite) return false;
+      if (ticketFilters.categorie !== 'Toutes' && t.Categorie !== ticketFilters.categorie) return false;
+      if (ticketFilters.q) {
+        const q = ticketFilters.q.toLowerCase();
+        return (t.Titre + t.ID + t.Demandeur).toLowerCase().indexOf(q) !== -1;
+      }
+      return true;
+    }));
+
+    const technicianEmails = computed(() => users.value.filter(u => u.Role === 'ICT' || u.Role === 'Admin').map(u => u.Email));
+    // All existing, active staff members that can be selected as a ticket requester.
+    const requesterUsers = computed(() => users.value.filter(u => u.Statut !== 'Inactif'));
+
+    const newTicketDialog = ref(false);
+    const savingTicket = ref(false);
+    const newTicket = reactive({ Titre:'', Description:'', Categorie:'Matériel', Priorite:'Moyenne', DemandeurID:null, Demandeur:'', Email:'', Departement:'', Bureau:'', Assigne:'' });
+
+    const mySlaBreachesCount = computed(() =>
+      tickets.value.filter(t => t.Assigne === currentUserEmail.value && t.SLA_Statut === 'Dépassé').length
+    );
+
+    // Fills Email / Département / Bureau automatically from the selected user's profile.
+    function onSelectRequester(userId) {
+      const u = users.value.find(x => x.ID === userId);
+      // console.log(u)
+      if (u) {
+        newTicket.Demandeur = u.Nom;
+        newTicket.Email = u.Email;
+        newTicket.Departement = u.Departement;
+        newTicket.Bureau = u.Bureau;
+        newTicket.Regions = u.Regions;
+      } else {
+        newTicket.Demandeur = ''; newTicket.Email = ''; newTicket.Departement = ''; newTicket.Bureau = '';
+      }
+    }
+
+    function openNewTicket() {
+      Object.assign(newTicket, { Titre:'', Description:'', Categorie:'Matériel', Priorite:'Moyenne', DemandeurID:null, Demandeur:'', Email:'', Departement:'', Bureau:'', Assigne: currentUserEmail.value });
+      // Pre-select the current logged-in user as requester when they exist in the directory.
+      const self = users.value.find(u => u.Email === meta.currentUser.Email);
+      if (self) { newTicket.DemandeurID = self.ID; onSelectRequester(self.ID); }
+      newTicketDialog.value = true;
+    }
+    async function submitNewTicket() {
+      if (!newTicket.Titre || !newTicket.Description) { notifyUser('Titre et description requis', 'error'); return; }
+      if (!newTicket.DemandeurID || !newTicket.Demandeur) { notifyUser('Veuillez sélectionner un demandeur', 'error'); return; }
+      savingTicket.value = true;
+      try {
+        await call('createTicket', { ...newTicket });
+        notifyUser('Ticket créé avec succès');
+        newTicketDialog.value = false;
+        await refreshStatsAndTickets();
+      } finally { savingTicket.value = false; }
+    }
+
+    function confirmDeleteTicket(t) {
+      confirmDialog.message = 'Supprimer le ticket "' + t.Titre + '" ? Cette action est irréversible.';
+      confirmDialog.action = async () => { await call('deleteTicket', t.ID); notifyUser('Ticket supprimé'); await refreshStatsAndTickets(); };
+      confirmDialog.show = true;
+    }
+
+    const ticketDrawer = ref(false);
+    const selectedTicket = ref(null);
+    const savedTicketStatus = ref('');
+    const ticketComments = ref([]);
+    const newComment = ref('');
+    const savingComment = ref(false);
+
+    async function openTicket(t) {
+      selectedTicket.value = { ...t };
+      savedTicketStatus.value = t.Statut;
+      ticketDrawer.value = true;
+      ticketComments.value = sanitizeList(await call('getTicketComments', t.ID));
+    }
+    async function patchTicket(patch, silent) {
+      await call('updateTicket', selectedTicket.value.ID, patch);
+      if (!silent) notifyUser('Ticket mis à jour');
+      await refreshStatsAndTickets();
+      const updated = tickets.value.find(t => t.ID === selectedTicket.value.ID);
+      if (updated) selectedTicket.value = { ...updated };
+    }
+
+    // --- Status change with email confirmation ---
+    const statusEmailCC = ref([]);
+    const loanEmailCC = ref([]);
+    const statusEmailDialog = reactive({ show:false, newStatus:'' });
+
+    function onStatusSelect(newStatus) {
+      if (!newStatus || newStatus === savedTicketStatus.value) return;
+      selectedTicket.value.Statut = newStatus; // immediate visual feedback in the select
+      statusEmailDialog.newStatus = newStatus;
+      statusEmailCC.value = [];
+      statusEmailDialog.show = true;
+    }
+    async function confirmStatusChange(sendEmail) {
+      const newStatus = statusEmailDialog.newStatus;
+      const cc = statusEmailCC.value.join(','); // AJOUT
+      statusEmailDialog.show = false;
+      await patchTicket({ Statut: newStatus, NotifyEmail: sendEmail }, true);
+      savedTicketStatus.value = newStatus;
+      notifyUser(sendEmail ? 'Statut mis à jour, email envoyé au demandeur' : 'Statut mis à jour, aucun email envoyé');
+    }
+    function cancelStatusChange() {
+      statusEmailDialog.show = false;
+      if (selectedTicket.value) selectedTicket.value.Statut = savedTicketStatus.value; // revert
+    }
+
+    async function submitComment() {
+      if (!newComment.value.trim()) return;
+      savingComment.value = true;
+      try {
+        await call('addComment', selectedTicket.value.ID, newComment.value, false);
+        newComment.value = '';
+        ticketComments.value = sanitizeList(await call('getTicketComments', selectedTicket.value.ID));
+        notifyUser('Commentaire ajouté');
+      } finally { savingComment.value = false; }
+    }
+
+    /* ================= ASSETS ================= */
+    // const assetFilters = reactive({ q:'', type:'Tous', statut:'Tous', region:'Tous', book:'Tous' });
+    const assetFilters = reactive({ q:'', type:[], region:[], book:'Tous', statut:[] });
+    const filteredAssets = computed(() => assets.value.filter(a => {
+      // MODIFIÉ : type et region vérifient désormais l'appartenance à un tableau
+      if (assetFilters.type.length && !assetFilters.type.includes(a.Type)) return false;
+      if (assetFilters.region.length && !assetFilters.region.includes(a.Regions)) return false;
+      if (assetFilters.book !== 'Tous' && a.Book !== assetFilters.book) return false;
+      if (assetFilters.statut.length && !assetFilters.statut.includes(a.Statut)) return false;
+      if (assetFilters.q) {
+        const q = assetFilters.q.toLowerCase();
+        return (a.Marque + a.Modele + a.NumeroSerie + a.ID + a.UtilisePar + a.Bureau + a.Notes + a.AssigneA + a.TagInventaire + a.AssetNumber).toLowerCase().indexOf(q) !== -1;
+      }
+      return true;
+    }));
+    const hasActiveAssetFilters = computed(() =>
+      !!assetFilters.q ||
+      assetFilters.type.length > 0 ||
+      assetFilters.region.length > 0 ||
+      assetFilters.book !== 'Tous' ||
+      assetFilters.statut.length > 0
+    );
+
+    function resetAssetFilters() {
+      assetFilters.q = '';
+      assetFilters.type = [];
+      assetFilters.region = [];
+      assetFilters.book = 'Tous';
+      assetFilters.statut = [];
+    }
+    const expiringWarranties = computed(() => {
+      const now = new Date(); const in60 = new Date(now.getTime() + 60*24*3600*1000);
+      return assets.value.filter(a => a.FinGarantie && new Date(a.FinGarantie) >= now && new Date(a.FinGarantie) <= in60).length;
+    });
+
+    const assetDialog = ref(false);
+    const savingAsset = ref(false);
+    const editingAsset = reactive({});
+    const extraTagsExpanded = ref(false);
+
+    const EXTRA_TAG_REGEX = /^[A-Z]{3}[0-9]{3}$/;
+    const normalizedTag = () => String(editingAsset.TagInventaire || '').trim().toUpperCase();
+    const isExtraAsset = computed(() => String(editingAsset.AssetNumber || '').trim().toUpperCase() === 'EXTRA');
+
+    // Même logique que le serveur, calculée sur assets.value (déjà chargé dans Inventaire IT)
+    const extraTagSummary = computed(() => {
+      const byPrefix = {};
+      assets.value.forEach(a => {
+        if (String(a.AssetNumber || '').trim().toUpperCase() !== 'EXTRA') return;
+        const tag = String(a.TagInventaire || '').trim().toUpperCase();
+        if (!EXTRA_TAG_REGEX.test(tag)) return;
+        const prefix = tag.slice(0, 3);
+        const num = parseInt(tag.slice(3), 10);
+        if (!byPrefix[prefix]) byPrefix[prefix] = { prefix, last: 0 };
+        if (num > byPrefix[prefix].last) byPrefix[prefix].last = num;
+      });
+      return Object.values(byPrefix)
+        .map(e => ({ prefix: e.prefix, next: e.last < 999 ? e.prefix + String(e.last + 1).padStart(3, '0') : null }))
+        .sort((a, b) => a.prefix.localeCompare(b.prefix));
+    });
+
+    // Renvoie le message d'erreur, ou '' si le tag est valide (ou si l'actif n'est pas EXTRA)
+    function extraTagProblem() {
+      if (!isExtraAsset.value) return '';
+      const tag = normalizedTag();
+      if (!tag) return "Tag obligatoire pour un actif EXTRA (format XXX000).";
+      if (!EXTRA_TAG_REGEX.test(tag)) return 'Format invalide : 3 lettres + 3 chiffres (ex. TBL005).';
+      const dup = assets.value.find(a => a.ID !== editingAsset.ID && String(a.TagInventaire || '').trim().toUpperCase() === tag);
+      if (dup) return 'Ce tag est déjà utilisé (actif ' + dup.ID + ').';
+      return '';
+    }
+    // Erreur affichée en direct sous le champ (pas de message tant que le champ est vide)
+    const extraTagError = computed(() => (editingAsset.TagInventaire ? extraTagProblem() : ''));
+
+    // AJOUT : AssetNumber doit être unique, sauf s'il vaut "EXTRA" (valeur partagée par design)
+    function assetNumberProblem() {
+      const value = String(editingAsset.AssetNumber || '').trim();
+      if (!value || value.toUpperCase() === 'EXTRA') return '';
+      const dup = assets.value.find(a => a.ID !== editingAsset.ID && String(a.AssetNumber || '').trim().toUpperCase() === value.toUpperCase());
+      if (dup) return 'Ce numéro d\'actif est déjà utilisé (actif ' + dup.ID + ').';
+      return '';
+    }
+    const assetNumberError = computed(() => (editingAsset.AssetNumber ? assetNumberProblem() : ''));
+
+    // AJOUT : NumeroSerie doit être unique dès qu'il est renseigné
+    function serialNumberProblem() {
+      const value = String(editingAsset.NumeroSerie || '').trim();
+      if (!value) return '';
+      const dup = assets.value.find(a => a.ID !== editingAsset.ID && String(a.NumeroSerie || '').trim().toUpperCase() === value.toUpperCase());
+      if (dup) return 'Ce numéro de série est déjà utilisé (actif ' + dup.ID + ').';
+      return '';
+    }
+    const serialNumberError = computed(() => (editingAsset.NumeroSerie ? serialNumberProblem() : ''));
+
+    // Suggestions : tous les prochains numéros si le champ est vide ; sinon celui du préfixe saisi
+    // MODIFIÉ : plus de suggestions tant que 3 lettres ne sont pas saisies.
+    // Dès la 3ᵉ lettre : uniquement le prochain tag du préfixe, ou XXX001 si le préfixe est nouveau.
+    const extraTagSuggestions = computed(() => {
+      if (!isExtraAsset.value) return [];
+      const typed = normalizedTag();
+      if (!/^[A-Z]{3}/.test(typed)) return [];
+
+      const prefix = typed.slice(0, 3);
+      const found = extraTagSummary.value.find(s => s.prefix === prefix);
+      const next = found ? found.next : prefix + '001'; // préfixe jamais utilisé → 001
+      if (!next || typed === next) return [];
+
+      // Plus de suggestion si le tag saisi est complet, valide et unique
+      if (EXTRA_TAG_REGEX.test(typed) && !extraTagError.value) return [];
+      return [next];
+    });
+
+    // ----- ASSETS DASHBOARD -----
+    const assetAnalytics = reactive({
+      totalAssets:0, totalCost:0, capitalizedCost:0, expensedCost:0, capitalizedCount:0, expensedCount:0,
+      byType:{}, byStatus:{}, byBook:{}, byRegion:{}, byRegionBook:{}, byCategorie:{}, byEtat:{},
+      extraTags:{ prefixes:[], invalid:[] } // AJOUT
+    });
+
+    // AJOUT
+    async function ensureAssetAnalyticsLoaded() {
+      if (loadedFlags.assetsDashboard) return;
+      tabLoading.assetsDashboard = true;
+      try {
+        const s = await call('getAssetDashboardStats');
+        Object.assign(assetAnalytics, s);
+        loadedFlags.assetsDashboard = true;
+      } finally {
+        tabLoading.assetsDashboard = false; 
+      }
+
+      await nextTick();
+      renderAssetTypeChart(); renderAssetStatusChart(); renderAssetBookChart(); renderAssetRegionChart();
+    }
+
+    // AJOUT
+    const ASSET_STATUS_COLORS = { 'En service':'#66bb6a', 'En stock':'#42a5f5', 'En réparation':'#ffa726', 'Hors service':'#e53935', 'Sorti':'#9e9e9e' };
+    const BOOK_COLORS = { 'Capitalized':'#0b6cb3', 'Expensed':'#ab47bc' };
+
+    function renderAssetTypeChart() {
+      destroyChart('chartAssetType');
+      const c = ctx('chartAssetType'); if (!c) return;
+      const labels = Object.keys(assetAnalytics.byType);
+      chartInstances.chartAssetType = new Chart(c, {
+        type: 'bar',
+        data: { labels: labels, datasets: [{ label:'Actifs', data: labels.map(l => assetAnalytics.byType[l]), backgroundColor:'#0b6cb3' }] },
+        options: { indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ x:{ beginAtZero:true, ticks:{ precision:0 } } } }
+      });
+    }
+
+    function renderAssetStatusChart() {
+      destroyChart('chartAssetStatus');
+      const c = ctx('chartAssetStatus'); if (!c) return;
+      const labels = Object.keys(assetAnalytics.byStatus);
+      chartInstances.chartAssetStatus = new Chart(c, {
+        type: 'doughnut',
+        data: { labels: labels, datasets:[{ data: labels.map(l => assetAnalytics.byStatus[l]), backgroundColor: labels.map(l => ASSET_STATUS_COLORS[l] || '#9e9e9e') }] },
+        options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, font:{ size:11 } } } } }
+      });
+    }
+
+    function renderAssetBookChart() {
+      destroyChart('chartAssetBook');
+      const c = ctx('chartAssetBook'); if (!c) return;
+      const labels = Object.keys(assetAnalytics.byBook);
+      chartInstances.chartAssetBook = new Chart(c, {
+        type: 'pie',
+        data: { labels: labels, datasets:[{ data: labels.map(l => assetAnalytics.byBook[l]), backgroundColor: labels.map(l => BOOK_COLORS[l] || '#9e9e9e') }] },
+        options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom' } } }
+      });
+    }
+
+    // MODIFIÉ : bar simple → bar empilée (Capitalized / Expensed) par région
+    function renderAssetRegionChart() {
+      destroyChart('chartAssetRegion');
+      const c = ctx('chartAssetRegion'); if (!c) return;
+
+      const regions = Object.keys(assetAnalytics.byRegionBook);
+      // Ensemble des books réellement présents (garde l'ordre Capitalized, Expensed
+      // en premier s'ils existent, puis toute autre valeur inattendue ensuite)
+      const knownBooks = ['Capitalized', 'Expensed'];
+      const allBooksSet = new Set();
+      regions.forEach(r => Object.keys(assetAnalytics.byRegionBook[r]).forEach(b => allBooksSet.add(b)));
+      const books = knownBooks.filter(b => allBooksSet.has(b)).concat([...allBooksSet].filter(b => !knownBooks.includes(b)));
+
+      const datasets = books.map(book => ({
+        label: book,
+        data: regions.map(r => (assetAnalytics.byRegionBook[r][book] || 0)),
+        backgroundColor: BOOK_COLORS[book] || '#9e9e9e'
+      }));
+
+      chartInstances.chartAssetRegion = new Chart(c, {
+        type: 'bar',
+        data: { labels: regions, datasets: datasets },
+        options: {
+          responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{ position:'bottom' } },
+          scales:{
+            x:{ stacked:true },
+            y:{ stacked:true, beginAtZero:true, ticks:{ precision:0 } }
+          }
+        }
+      });
+    }
+
+    // AJOUT
+    function formatCurrency(v) {
+      return new Intl.NumberFormat('fr-FR', { maximumFractionDigits:0 }).format(v || 0);
+    }
+
+    const assetKpiCards = computed(() => [
+      { label:'Total actifs', value: assetAnalytics.totalAssets, icon:'mdi-laptop', color:'#0b6cb3', bg:'rgba(11,108,179,0.12)' },
+      { label:'Régions couvertes', value: Object.keys(assetAnalytics.byRegion).length, icon:'mdi-map-marker-multiple-outline', color:'#2e7d32', bg:'rgba(46,125,50,0.12)' },
+      { label:'Capitalisés', value: assetAnalytics.capitalizedCount, icon:'mdi-bank-outline', color:'#6a1b9a', bg:'rgba(106,27,154,0.12)', chip: formatCurrency(assetAnalytics.capitalizedCost), chipColor:'primary' },
+      { label:'Dépensés (Expensed)', value: assetAnalytics.expensedCount, icon:'mdi-receipt-text-outline', color:'#ef6c00', bg:'rgba(239,108,0,0.12)', chip: formatCurrency(assetAnalytics.expensedCost), chipColor:'warning' }
+    ]);
+
+    // ----- LOGIQUE D'UPLOAD -----
+    const selectedFile = ref(null);
+    const isDragging = ref(false);
+    const fileError = ref('');
+    const fileInput = ref(null);
+    const MAX_FILE_SIZE = 10 * 1024 * 1024;
+    const ALLOWED_EXTENSIONS = ['pdf', 'doc', 'docx', 'xls', 'xlsx'];
+
+    const triggerFileInput = () => { if (fileInput.value) fileInput.value.click(); };
+
+    const formatFileSize = (bytes) => {
+      if (bytes === 0) return '0 Octet';
+      const k = 1024; const sizes = ['Octets', 'Ko', 'Mo'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    const validateFile = (file) => {
+      fileError.value = '';
+      if (!file) return false;
+      const extension = file.name.split('.').pop().toLowerCase();
+      if (!ALLOWED_EXTENSIONS.includes(extension)) {
+        fileError.value = `Format non autorisé (.${extension}). Formats acceptés : .pdf, .doc, .docx, .xls, .xlsx`;
+        return false;
+      }
+      if (file.size > MAX_FILE_SIZE) {
+        fileError.value = `Le fichier est trop volumineux (${formatFileSize(file.size)}). Max: 10 Mo.`;
+        return false;
+      }
+      return true;
+    };
+
+    const handleFileSelect = (event) => { const file = event.target.files[0]; if (file && validateFile(file)) selectedFile.value = file; };
+    const handleFileDrop = (event) => {
+      isDragging.value = false;
+      const file = event.dataTransfer.files[0];
+      if (file && validateFile(file)) selectedFile.value = file;
+    };
+
+    const removeSelectedFile = (event) => {
+      if (event) event.stopPropagation();
+      selectedFile.value = null; fileError.value = '';
+      if (fileInput.value) fileInput.value.value = '';
+    };
+
+    const removeExistingFile = (event) => {
+      if (event) event.stopPropagation();
+      editingAsset.DocumentID = null; editingAsset.NomDocument = null; editingAsset.LienDocument = null;
+    };
+
+    const fileToBase64 = (file) => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader(); reader.readAsDataURL(file);
+        reader.onload = () => { const base64String = reader.result.split(',')[1]; resolve({ fileName: file.name, mimeType: file.type, base64Data: base64String }); };
+        reader.onerror = (error) => reject(error);
+      });
+    };
+
+    const parseDocument = (docStr) => {
+      if (!docStr) return { id: '', name: '', url: '' };
+      try {
+        return typeof docStr === 'object' ? docStr : JSON.parse(docStr);
+      } catch (e) {
+        return { id: '', name: 'Document', url: docStr };
+      }
+    };
+    
+    function openNewAsset() {
+      Object.keys(editingAsset).forEach(k => delete editingAsset[k]);
+      // MODIFIÉ : AssigneID → UtiliseParID, AssigneA:'' → UtilisePar:''
+      Object.assign(editingAsset, { Statut:'En service', UtiliseParID:null, UtilisePar:'', Bureau:'', NomDocument: '', LienDocument: '' });
+      removeSelectedFile();
+      assetDialog.value = true;
+    }
+
+    function editAsset(a) {
+      Object.keys(editingAsset).forEach(k => delete editingAsset[k]);
+      Object.assign(editingAsset, a);
+
+      editingAsset.NomDocument = a.NomDocument || '';
+      editingAsset.LienDocument = a.LienDocument || '';
+
+      // MODIFIÉ : match sur a.AssigneA → a.UtilisePar, AssigneID → UtiliseParID
+      const match = requesterUsers.value.find(u => u.Nom === a.UtilisePar);
+      editingAsset.UtiliseParID = match ? match.ID : null;
+      removeSelectedFile();
+      assetDialog.value = true;
+    }
+
+    // Auto-fills AssigneA (name) and Bureau from the selected user's profile.
+    // Departement is set silently too (kept in the sheet for consistency) even
+    // though the form no longer shows a separate Département field.
+    function onSelectAssetUtilisePar(userId) {
+      const u = users.value.find(x => x.ID === userId);
+      // console.log(u)
+      if (u) {
+        editingAsset.UtilisePar = u.Nom;
+        editingAsset.Bureau = u.Bureau;
+        editingAsset.Departement = u.Departement;
+        editingAsset.Regions = u.Regions;
+      } else {
+        editingAsset.UtilisePar = ''; editingAsset.Bureau = ''; editingAsset.Departement = ''; editingAsset.Regions = '';
+      }
+    }
+
+    // --- Asset detail view (read-only) ---
+    const assetDetailDialog = ref(false);
+    const viewingAsset = reactive({});
+    function openAssetDetail(a) {
+      Object.keys(viewingAsset).forEach(k => delete viewingAsset[k]);
+      Object.assign(viewingAsset, a);
+      assetDetailDialog.value = true;
+    }
+
+    watch(
+      () => editingAsset.Book,
+      (newBook) => {
+        if (newBook === 'Expensed') {
+          editingAsset.AssetNumber = 'EXTRA'
+        } else if (editingAsset.AssetNumber === 'EXTRA') {
+          editingAsset.AssetNumber = ''
+        }
+      }
+    )
+    const ASSET_TYPE_ICONS = {
+      'Ordinateur portable':'mdi-laptop', 'Ordinateur de bureau':'mdi-desktop-tower-monitor', 'Flybox':'mdi-router-network-wireless', 'Visioconférence':'mdi-microphone-outline', 'Imprimante':'mdi-printer',
+      'Écran':'mdi-monitor', 'Serveur':'mdi-server', 'Routeur/Switch':'mdi-router-wireless', 'Smartphone':'mdi-cellphone',
+      'Tablette':'mdi-tablet', 'Licence logicielle':'mdi-key-outline','Appareil photo':'mdi-camera-outline','Téléphone satellite':'mdi-satellite-uplink','Radio VHF':'mdi-radio-handheld', 'Vidéo projecteur':'mdi-projector', 'Domino':'mdi-web-box', 'Autre':'mdi-devices'
+    };
+    function assetTypeIcon(type) { return ASSET_TYPE_ICONS[type] || 'mdi-devices'; }
+    function assetWarrantyBadge(a) {
+      if (!a.FinGarantie) return null;
+      const end = new Date(a.FinGarantie); const now = new Date();
+      const in60 = new Date(now.getTime() + 60*24*3600*1000);
+      if (end < now) return { label:'Garantie expirée', color:'error' };
+      if (end <= in60) return { label:'Garantie bientôt expirée', color:'warning' };
+      return { label:'Sous garantie', color:'success' };
+    }
+
+    async function submitAsset() {
+      if (!editingAsset.Type) return notifyUser('Le type est requis', 'error');
+      if (!editingAsset.Book) return notifyUser('Le book est requis', 'error');
+      if (!editingAsset.Marque) return notifyUser('La marque/description est requise', 'error');
+      const numberProblem = assetNumberProblem();
+      if (numberProblem) return notifyUser(numberProblem, 'error');
+      const serialProblem = serialNumberProblem();
+      if (serialProblem) return notifyUser(serialProblem, 'error');
+      const tagProblem = extraTagProblem();
+      if (tagProblem) return notifyUser(tagProblem, 'error');
+      if (isExtraAsset.value) editingAsset.TagInventaire = normalizedTag();
+      savingAsset.value = true; fileError.value = '';
+      try {
+        if (selectedFile.value) {
+          const fileData = await fileToBase64(selectedFile.value);
+          const uploadResult = await call('uploadFileToDrive', fileData);
+          if (uploadResult && uploadResult.success) {
+            editingAsset.NomDocument = uploadResult.name;
+            editingAsset.LienDocument = uploadResult.url;
+          } else {
+            throw new Error(uploadResult?.message || "Erreur lors de l'upload du fichier.");
+          }
+        }
+        // 2. Sérialisation dans la colonne unique 'Document'
+        if (editingAsset.DocumentURL || editingAsset.DocumentName) {
+          editingAsset.Document = JSON.stringify({
+            id: editingAsset.DocumentID || '',
+            name: editingAsset.DocumentName || '',
+            url: editingAsset.DocumentURL || ''
+          });
+        } else {
+          editingAsset.Document = '';
+        }
+
+        // 3. Sauvegarde backend
+        if (editingAsset.ID) await call('updateAsset', editingAsset.ID, { ...editingAsset });
+        else await call('createAsset', { ...editingAsset });
+        
+        notifyUser('Actif enregistré avec succès');
+        assetDialog.value = false;
+        assets.value = sanitizeList(await call('getAllAssets'));
+      } catch(err) {
+        fileError.value = err.message || "Une erreur est survenue.";
+      } finally {
+        savingAsset.value = false;
+        loadedFlags.assetsDashboard = false;
+      }
+    }
+    function confirmDeleteAsset(a) {
+      confirmDialog.message = 'Supprimer l\'actif "' + a.Marque + ' ' + a.Modele + '" ?';
+      confirmDialog.action = async () => { await call('deleteAsset', a.ID); notifyUser('Actif supprimé'); assets.value = sanitizeList(await call('getAllAssets')); };
+      confirmDialog.show = true;
+    }
+
+    
+
+    /* ================= ASSET TRANSFERS / EMPRUNTS =================
+       Uses the same data sources already loaded elsewhere: the asset comes
+       from `assets`/`viewingAsset`, the borrower comes from `requesterUsers`
+       (identical picker to the ticket "Demandeur" and asset "Assigné à"
+       fields). Returning a loan reuses the existing generic confirmDialog
+       instead of a new confirmation UI. */
+    function assetTransferHistory(assetId) {
+      return transfers.value.filter(t => t.AssetID === assetId);
+    }
+    function isTransferLate(t) {
+      return t.Statut !== 'Retourné' && t.DateRetourPrevue && new Date(t.DateRetourPrevue) < new Date();
+    }
+    const activeTransfers = computed(() => transfers.value.filter(t => t.Statut !== 'Retourné'));
+
+    const viewingAssetHasActiveTransfer = computed(() => {
+      if (!viewingAsset.ID) return false;
+      return assetTransferHistory(viewingAsset.ID).some(t => t.Statut !== 'Retourné');
+    });
+
+    const transferDialog = reactive({ show:false, assetId:'', assetLabel:'', userId:null, dateRetourPrevue:'', notes:'' });
+    const savingTransfer = ref(false);
+
+    function openTransferDialog(asset) {
+      transferDialog.assetId = asset.ID;
+      transferDialog.assetLabel = (asset.Marque || '') + ' ' + (asset.Modele || '');
+      transferDialog.userId = null;
+      transferDialog.dateRetourPrevue = '';
+      transferDialog.notes = '';
+      loanEmailCC.value = [];
+      transferDialog.show = true;
+    }
+
+    // --- Loan creation with email confirmation (same pattern as ticket status change) ---
+    const loanEmailDialog = reactive({ show:false });
+
+    function requestTransferConfirmation() {
+      const u = users.value.find(x => x.ID === transferDialog.userId);
+      if (!u) { notifyUser('Veuillez sélectionner un emprunteur', 'error'); return; }
+      loanEmailDialog.show = true;
+    }
+    function cancelTransferEmailChoice() {
+      loanEmailDialog.show = false;
+    }
+    async function finalizeTransfer(sendEmail) {
+      const u = users.value.find(x => x.ID === transferDialog.userId);
+      if (!u) { loanEmailDialog.show = false; return; }
+      loanEmailDialog.show = false;
+      savingTransfer.value = true;
+      try {
+        await call('createTransfer', {
+          AssetID: transferDialog.assetId,
+          Emprunteur: u.Nom,
+          EmprunteurEmail: u.Email,
+          Departement: u.Departement,
+          Bureau: u.Bureau,
+          DateRetourPrevue: transferDialog.dateRetourPrevue,
+          Notes: transferDialog.notes,
+          NotifyEmail: sendEmail,
+          NotifyCC: loanEmailCC.value.join(',')
+        });
+        notifyUser(sendEmail ? 'Emprunt enregistré, email envoyé à l\'emprunteur' : 'Emprunt enregistré, aucun email envoyé');
+        transferDialog.show = false;
+        assets.value = sanitizeList(await call('getAllAssets'));
+        transfers.value = sanitizeList(await call('getAllTransfers'));
+        // keep the detail dialog in sync if it's open on this asset
+        if (viewingAsset.ID === transferDialog.assetId) {
+          const updated = assets.value.find(a => a.ID === transferDialog.assetId);
+          if (updated) Object.assign(viewingAsset, updated);
+        }
+      } finally { savingTransfer.value = false; }
+    }
+    function confirmReturnTransfer(t) {
+      confirmDialog.message = 'Marquer "' + t.AssetLabel + '" comme retourné par ' + t.Emprunteur + ' ?';
+      confirmDialog.action = async () => {
+        await call('returnTransfer', t.ID, '');
+        notifyUser('Retour enregistré');
+        assets.value = sanitizeList(await call('getAllAssets'));
+        transfers.value = sanitizeList(await call('getAllTransfers'));
+        if (viewingAsset.ID === t.AssetID) {
+          const updated = assets.value.find(a => a.ID === t.AssetID);
+          if (updated) Object.assign(viewingAsset, updated);
+        }
+      };
+      confirmDialog.show = true;
+    }
+
+    /* ================= export assets ================= */
+    const exporting = ref(false)
+
+    const exportColumnsCatalog = ref([]); // [{ key, label }]
+    const exportColumnsDialog = ref(false);
+    const selectedExportColumns = ref([]);
+
+    async function loadExportColumnsCatalog() {
+      exportColumnsCatalog.value = await call('getAssetExportColumns');
+      // Sélection par défaut : reprend le jeu de colonnes historique
+      const defaults = ['ID','Type','MarqueModele','NumeroSerie','Statut','AssigneA','FinGarantie','Notes'];
+      selectedExportColumns.value = exportColumnsCatalog.value
+        .map(c => c.key)
+        .filter(k => defaults.includes(k));
+    }
+
+    function openExportColumnsDialog() {
+      if (!exportColumnsCatalog.value.length) loadExportColumnsCatalog();
+      exportColumnsDialog.value = true;
+    }
+
+    function toggleAllExportColumns(checked) {
+      selectedExportColumns.value = checked ? exportColumnsCatalog.value.map(c => c.key) : [];
+    }
+
+    const exportAssets = async () => {
+      if (exporting.value) return
+      if (!selectedExportColumns.value.length) {
+        notifyUser('Veuillez sélectionner au moins une colonne', 'error');
+        return;
+      }
+
+      exporting.value = true
+      exportColumnsDialog.value = false;
+
+      try {
+        const url = await call(
+          'exportAssetsToExcel',
+          filteredAssets.value,
+          selectedExportColumns.value
+        )
+
+        if (!url) {
+          throw new Error('Aucun lien de téléchargement reçu.')
+        }
+
+        window.open(url, '_blank')
+
+      } catch (error) {
+        console.error('Erreur lors de l’export Excel :', error)
+      } finally {
+        exporting.value = false
+      }
+    }
+
+
+
+    /* ================= USERS ================= */
+    const userFilters = reactive({ q:'', role:'Tous', statut:'Tous' });
+    const filteredUsers = computed(() => adminUsersDirectory.value.filter(u => {
+      if (userFilters.role !== 'Tous' && u.Role !== userFilters.role) return false;
+      if (userFilters.statut !== 'Tous' && u.Statut !== userFilters.statut) return false;
+      if (userFilters.q) {
+        const q = userFilters.q.toLowerCase();
+        return (u.Nom + u.Email).toLowerCase().indexOf(q) !== -1;
+      }
+      return true;
+    }));
+    const userDialog = ref(false);
+    const savingUser = ref(false);
+    const editingUser = reactive({});
+    function openNewUser() { Object.keys(editingUser).forEach(k => delete editingUser[k]); Object.assign(editingUser, { Role:'Utilisateur', Statut:'Actif' }); userDialog.value = true; }
+    function editUser(u) { Object.keys(editingUser).forEach(k => delete editingUser[k]); Object.assign(editingUser, u); userDialog.value = true; }
+    async function submitUser() {
+      if (!editingUser.Nom || !editingUser.Email) { notifyUser('Nom et email requis', 'error'); return; }
+      savingUser.value = true;
+      try {
+        if (editingUser.ID) await call('updateUser', editingUser.ID, { ...editingUser });
+        else await call('createUser', { ...editingUser });
+        notifyUser('Utilisateur enregistré');
+        userDialog.value = false;
+        const [full, lite] = await Promise.all([call('getAllUsers'), call('getUserDirectoryLite')]);
+        adminUsersDirectory.value = sanitizeList(full);
+        users.value = sanitizeList(lite);
+      } finally { savingUser.value = false; }
+    }
+
+    function confirmDeleteUser(u) {
+      confirmDialog.message = 'Supprimer l\'utilisateur "' + u.Nom + '" ?';
+      confirmDialog.action = async () => {
+        await call('deleteUser', u.ID);
+        notifyUser('Utilisateur supprimé');
+        const [full, lite] = await Promise.all([call('getAllUsers'), call('getUserDirectoryLite')]);
+        adminUsersDirectory.value = sanitizeList(full);
+        users.value = sanitizeList(lite);
+      };
+      confirmDialog.show = true;
+    }
+
+    /* ================= KNOWLEDGE BASE ================= */
+    const kbFilters = reactive({ q:'', categorie:'Toutes' });
+    const filteredArticles = computed(() => articles.value.filter(a => {
+      if (kbFilters.categorie !== 'Toutes' && a.Categorie !== kbFilters.categorie) return false;
+      if (kbFilters.q) {
+        const q = kbFilters.q.toLowerCase();
+        return (a.Titre + a.Contenu + a.TagsMots).toLowerCase().indexOf(q) !== -1;
+      }
+      return true;
+    }));
+    const articleDialog = ref(false);
+    const articleEditMode = ref(false);
+    const savingArticle = ref(false);
+    const editingArticle = reactive({});
+
+    // Convertit le markdown de l'article (titres, gras, italique, listes, tâches,
+    // blocs <details>) en HTML sécurisé pour l'affichage en lecture.
+    const renderedArticleContent = computed(() => {
+      if (!editingArticle.Contenu) return '';
+      const rawHtml = marked.parse(editingArticle.Contenu, { breaks: false });
+      const clean = DOMPurify.sanitize(rawHtml, {
+        ADD_TAGS: ['details', 'summary'],
+        ADD_ATTR: ['target', 'rel']
+      });
+      // Force l'ouverture des liens dans un nouvel onglet, avec sécurité noopener
+      const temp = document.createElement('div');
+      temp.innerHTML = clean;
+      temp.querySelectorAll('a').forEach(a => {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      });
+      return temp.innerHTML;
+    });
+
+    const display = useDisplay();
+
+    const articleTextarea = ref();
+    const articleMobileTarget = ref();
+    const articleDesktopTarget = ref();
+    const articleTeleportTarget = computed(() =>
+      display.mobile.value ? articleMobileTarget.value : articleDesktopTarget.value
+    );
+
+    function onClickArticleHeading() {
+      if (!editingArticle.Contenu) {
+        editingArticle.Contenu = '# ';
+      } else if (editingArticle.Contenu === '# ') {
+        editingArticle.Contenu = '';
+      } else {
+        editingArticle.Contenu += ' # ';
+      }
+      articleTextarea.value.focus();
+    }
+
+    async function onClickArticleBold() {
+      articleTextarea.value.focus();
+
+      if (!editingArticle.Contenu) {
+        editingArticle.Contenu = '**';
+        await nextTick();
+        articleTextarea.value.setSelectionRange(1, 1);
+      } else if (editingArticle.Contenu === '**') {
+        editingArticle.Contenu = '';
+      } else {
+        const start = editingArticle.Contenu.length;
+        editingArticle.Contenu += ' **';
+        await nextTick();
+        articleTextarea.value.setSelectionRange(start + 2, start + 2);
+      }
+    }
+
+    async function onClickArticleItalic() {
+      articleTextarea.value.focus();
+
+      if (!editingArticle.Contenu) {
+        editingArticle.Contenu = '__';
+        await nextTick();
+        articleTextarea.value.setSelectionRange(1, 1);
+      } else if (editingArticle.Contenu === '__') {
+        editingArticle.Contenu = '';
+      } else {
+        const start = editingArticle.Contenu.length;
+        editingArticle.Contenu += ' __';
+        await nextTick();
+        articleTextarea.value.setSelectionRange(start + 2, start + 2);
+      }
+    }
+
+    function onClickArticleListNumbered() {
+      if (!editingArticle.Contenu) {
+        editingArticle.Contenu = '1. ';
+      } else if (editingArticle.Contenu === '1. ') {
+        editingArticle.Contenu = '';
+      } else {
+        editingArticle.Contenu += ' 1. ';
+      }
+      articleTextarea.value.focus();
+    }
+
+    function onClickArticleListUnordered() {
+      if (!editingArticle.Contenu) {
+        editingArticle.Contenu = '- ';
+      } else if (editingArticle.Contenu === '- ') {
+        editingArticle.Contenu = '';
+      } else {
+        editingArticle.Contenu += ' - ';
+      }
+      articleTextarea.value.focus();
+    }
+
+    function onClickArticleListTask() {
+      if (!editingArticle.Contenu) {
+        editingArticle.Contenu = '- [] ';
+      } else {
+        editingArticle.Contenu += '\n\n- [] ';
+      }
+      articleTextarea.value.focus();
+    }
+
+    async function onClickArticleDetails() {
+      articleTextarea.value.focus();
+
+      if (!editingArticle.Contenu || !editingArticle.Contenu.startsWith('<details>')) {
+        editingArticle.Contenu = `<details>\n<summary>Details</summary>\n\n\n\n</details>`;
+        await nextTick();
+        articleTextarea.value.setSelectionRange(38, 38);
+      } else {
+        editingArticle.Contenu = '';
+      }
+    }
+
+    async function onClickArticleLink() {
+      articleTextarea.value.focus();
+
+      if (!editingArticle.Contenu) {
+        editingArticle.Contenu = '[texte du lien](https://)';
+        await nextTick();
+        // sélectionne "texte du lien" pour que l'utilisateur puisse le remplacer directement
+        articleTextarea.value.setSelectionRange(1, 15);
+      } else {
+        const start = editingArticle.Contenu.length;
+        editingArticle.Contenu += '\n\n[texte du lien](https://)';
+        await nextTick();
+        articleTextarea.value.setSelectionRange(start + 3, start + 17);
+      }
+    }
+
+    // Pas de gestion de pièces jointes ici (onClickAttachFiles) : la KB n'a pas
+    // d'équivalent au champ `images` du composant d'origine. Retiré de la liste
+    // d'actions ci-dessous ; à réintroduire si un upload d'images est souhaité
+    // pour les articles.
+    const articleActions = [
+      { icon: 'mdi-format-header-1', onClick: onClickArticleHeading },
+      { icon: 'mdi-format-bold', onClick: onClickArticleBold },
+      { icon: 'mdi-format-italic', onClick: onClickArticleItalic },
+      { divider: true },
+      { icon: 'mdi-format-list-numbered', onClick: onClickArticleListNumbered },
+      { icon: 'mdi-format-list-bulleted', onClick: onClickArticleListUnordered },
+      { icon: 'mdi-format-list-checks', onClick: onClickArticleListTask },
+      { divider: true },
+      { icon: 'mdi-link-variant', onClick: onClickArticleLink },
+      { icon: 'mdi-format-vertical-align-bottom', onClick: onClickArticleDetails },
+    ];
+
+    function openNewArticle() {
+      Object.keys(editingArticle).forEach(k => delete editingArticle[k]);
+      Object.assign(editingArticle, { Categorie: meta.categories[0], Titre:'', Contenu:'', TagsMots:'' });
+      articleEditMode.value = true; articleDialog.value = true;
+    }
+    async function openArticle(a) {
+      Object.keys(editingArticle).forEach(k => delete editingArticle[k]);
+      Object.assign(editingArticle, a);
+      articleEditMode.value = false; articleDialog.value = true;
+      call('incrementArticleViews', a.ID);
+    }
+    async function submitArticle() {
+      if (!editingArticle.Titre || !editingArticle.Contenu) { notifyUser('Titre et contenu requis', 'error'); return; }
+      savingArticle.value = true;
+      try {
+        if (editingArticle.ID) await call('updateArticle', editingArticle.ID, { ...editingArticle });
+        else await call('createArticle', { ...editingArticle });
+        notifyUser('Article enregistré');
+        articleDialog.value = false;
+        articles.value = sanitizeList(await call('getAllArticles'));
+      } finally { savingArticle.value = false; }
+    }
+
+    /* ================= REPORTS ================= */
+    const avgResolutionTime = computed(() => {
+      const resolved = tickets.value.filter(t => t.DateResolution);
+      if (!resolved.length) return '0';
+      const totalHours = resolved.reduce((sum, t) => sum + (new Date(t.DateResolution) - new Date(t.DateCreation)) / 3600000, 0);
+      return (totalHours / resolved.length).toFixed(1);
+    });
+    const slaComplianceRate = computed(() => {
+      const closed = tickets.value.filter(t => ['Résolu','Fermé'].indexOf(t.Statut) !== -1);
+      if (!closed.length) return 100;
+      const onTime = closed.filter(t => t.SLA_Statut !== 'Dépassé').length;
+      return Math.round((onTime / closed.length) * 100);
+    });
+    // Dynamic height for the "Tickets par demandeur" chart so bars stay readable
+    // whether there are 3 requesters or 60.
+    const requesterChartHeight = computed(() => {
+      const count = new Set(tickets.value.map(t => t.Demandeur || 'Inconnu')).size;
+      return Math.max(260, count * 32) + 'px';
+    });
+    function exportTicketsCSV() {
+      const headers = ['ID','Titre','Categorie','Priorite','Statut','Demandeur','Assigne','DateCreation','SLA_Statut'];
+      const rows = tickets.value.map(t => headers.map(h => '"' + String(t[h]||'').replace(/"/g,'""') + '"').join(','));
+      const csv = headers.join(',') + '\n' + rows.join('\n');
+      const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'unfpa_ict_tickets_' + new Date().toISOString().slice(0,10) + '.csv';
+      link.click();
+    }
+
+    /* ================= SETTINGS ================= */
+    const editableSettings = ref([]);
+    async function loadSettings() { editableSettings.value = await call('getAllSettings'); }
+    async function saveSetting(s) { await call('updateSetting', s.Cle, s.Valeur); notifyUser('Paramètre mis à jour'); }
+
+    // Listes déroulantes éditables (catégories, types d'actifs, priorités, statuts, rôles)
+    const editableLists = reactive({});
+    const selectedListKey = ref('CATEGORIES');
+    const newListItemText = ref('');
+    const savingList = ref(false);
+
+    async function loadEditableLists() {
+      const result = await call('getAllEditableLists');
+      Object.assign(editableLists, result);
+    }
+
+    function addListItem() {
+      const value = newListItemText.value.trim();
+      if (!value) return;
+      const list = editableLists[selectedListKey.value];
+      if (list.items.includes(value)) { notifyUser('Cette valeur existe déjà', 'error'); return; }
+      list.items.push(value);
+      newListItemText.value = '';
+    }
+
+    function removeListItem(index) {
+      editableLists[selectedListKey.value].items.splice(index, 1);
+    }
+
+    async function saveEditableList() {
+      savingList.value = true;
+      try {
+        const list = editableLists[selectedListKey.value];
+        const result = await call('updateEditableList', selectedListKey.value, list.items);
+        if (result.success) {
+          notifyUser('Liste enregistrée');
+          list.items = result.items; // reflète le nettoyage serveur (trim, doublons)
+          await loadAll(); // recharge meta.categories/assetTypes/... pour toute l'app
+        } else {
+          notifyUser(result.error || 'Erreur', 'error');
+        }
+      } finally {
+        savingList.value = false;
+      }
+    }
+
+    /* ---------------- INIT ---------------- */
+    onMounted(async () => {
+      await loadAll();
+    });
+
+    return {
+      loading, dataReady, theme, darkMode, drawer, rail, page, meta, stats, tickets, assets, users, currentUser, articles, auditLog,
+      snackbar, confirmDialog, navItems, currentPageTitle, toggleTheme, userInitials, initials, formatDate,
+      searchQuery, searchResults, searchMenu, onSearch, searchHasResults,
+      priorityColor, statusColor, assetStatusColor, kpiCards, maxAgentLoad, assetAnalytics, assetKpiCards, tabLoading,
+      dashboardStats, selectedDashboardUser, dashboardUserItems, canSwitchDashboardUser, dashboardKpiCards, currentUserEmail, trendPeriod,trendLoading, statsLoading, agentWorkload, maxAgentLoad,
+      ticketFilters, filteredTickets, technicianEmails, requesterUsers, onSelectRequester, newTicketDialog, savingTicket, newTicket, mySlaBreachesCount, openNewTicket, submitNewTicket, confirmDeleteTicket,
+      ticketDrawer, selectedTicket, ticketComments, newComment, savingComment, openTicket, patchTicket, submitComment,
+      statusEmailDialog, onStatusSelect, confirmStatusChange, cancelStatusChange, statusEmailCC, isExtraAsset, extraTagError, assetNumberError, serialNumberError, extraTagSuggestions,extraTagsExpanded,
+      assetFilters, filteredAssets, hasActiveAssetFilters, resetAssetFilters, expiringWarranties, assetDialog, savingAsset, editingAsset, openNewAsset, editAsset, onSelectAssetUtilisePar, submitAsset, confirmDeleteAsset, selectedFile, isDragging, fileError, fileInput, triggerFileInput, handleFileSelect, handleFileDrop, removeSelectedFile, removeExistingFile, formatFileSize,
+      assetDetailDialog, parseDocument, viewingAsset, openAssetDetail, assetTypeIcon, assetWarrantyBadge, exportAssets, exporting, exportColumnsCatalog, exportColumnsDialog, selectedExportColumns, openExportColumnsDialog, toggleAllExportColumns,
+      transfers, activeTransfers, assetTransferHistory, isTransferLate, viewingAssetHasActiveTransfer, transferDialog, savingTransfer, openTransferDialog, confirmReturnTransfer,
+      loanEmailDialog, requestTransferConfirmation, cancelTransferEmailChoice, finalizeTransfer, loanEmailCC,
+      userFilters, filteredUsers, userDialog, savingUser, editingUser, openNewUser, editUser, submitUser, confirmDeleteUser, display, articleTextarea, articleMobileTarget, articleDesktopTarget, articleTeleportTarget, articleActions,renderedArticleContent, kbFilters, filteredArticles, articleDialog, articleEditMode, savingArticle, editingArticle, openNewArticle, openArticle, submitArticle,
+      kbFilters, filteredArticles, articleDialog, articleEditMode, savingArticle, editingArticle, openNewArticle, openArticle, submitArticle,
+      avgResolutionTime, slaComplianceRate, requesterChartHeight, exportTicketsCSV, editableLists, selectedListKey, newListItemText, savingList, addListItem, removeListItem, saveEditableList, loadEditableLists,
+      editableSettings, saveSetting, loadAuditLog
+    };
+  }
+};
+
+const app = createApp(App);
+app.use(vuetify);
+app.mount('#app');
+</script>

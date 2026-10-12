@@ -1,0 +1,103 @@
+<div v-show="page === 'settings'" class="fade-in">
+  <v-row>
+    <v-col cols="12" md="6">
+      <v-card class="section-card pa-4 mb-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-3">Paramètres généraux</div>
+        <v-text-field
+          v-for="s in editableSettings" :key="s.Cle"
+          v-model="s.Valeur" :label="s.Cle" variant="outlined" density="comfortable" class="mb-2"
+          @blur="saveSetting(s)">
+        </v-text-field>
+      </v-card>
+
+      <v-card class="section-card pa-4 mb-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-3">Apparence</div>
+        <v-switch v-model="darkMode" color="primary" hide-details label="Mode sombre" @update:model-value="toggleTheme"></v-switch>
+      </v-card>
+
+      <!-- AJOUT : Listes déroulantes éditables (réservé aux Admin) -->
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-3">Listes déroulantes</div>
+
+        <v-select
+          v-model="selectedListKey"
+          :items="Object.keys(editableLists).map(k => ({ title: editableLists[k].label, value: k }))"
+          item-title="title"
+          item-value="value"
+          label="Liste à modifier"
+          variant="outlined"
+          density="comfortable"
+          class="mb-3"
+        ></v-select>
+
+        <div v-if="editableLists[selectedListKey]">
+          <div class="d-flex flex-wrap ga-2 mb-3">
+            <v-chip
+              v-for="(item, i) in editableLists[selectedListKey].items"
+              :key="item"
+              closable
+              variant="tonal"
+              color="primary"
+              @click:close="removeListItem(i)"
+            >
+              {{ item }}
+            </v-chip>
+          </div>
+
+          <div class="d-flex ga-2 align-center">
+            <v-text-field
+              v-model="newListItemText"
+              label="Nouvelle valeur"
+              variant="outlined"
+              density="comfortable"
+              hide-details
+              @keyup.enter="addListItem"
+            ></v-text-field>
+            <v-btn icon="mdi-plus" color="primary" variant="tonal" @click="addListItem"></v-btn>
+          </div>
+
+          <v-btn
+            class="mt-4"
+            color="primary"
+            :loading="savingList"
+            @click="saveEditableList"
+          >
+            Enregistrer les modifications
+          </v-btn>
+        </div>
+      </v-card>
+    </v-col>
+
+    <v-col cols="12" md="6">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="d-flex align-center justify-space-between mb-3">
+          <span class="text-subtitle-1 font-weight-bold">Journal d'audit</span>
+          <v-btn size="small" variant="text" prepend-icon="mdi-refresh" @click="loadAuditLog">Actualiser</v-btn>
+        </div>
+        <div style="max-height:480px; overflow-y:auto">
+          <v-timeline density="compact" side="end" truncate-line="both">
+            <v-timeline-item v-for="log in auditLog" :key="log.ID" size="x-small" dot-color="primary">
+              <div class="text-caption text-medium-emphasis">{{ formatDate(log.Date) }}</div>
+              <div class="text-body-2"><span class="font-weight-bold">{{ log.Action }}</span> — {{ log.Cible }}</div>
+              <div class="text-caption text-medium-emphasis">{{ log.Utilisateur }}</div>
+            </v-timeline-item>
+          </v-timeline>
+          <div v-if="auditLog.length === 0" class="text-body-2 text-medium-emphasis">Aucune activité enregistrée.</div>
+        </div>
+      </v-card>
+    </v-col>
+  </v-row>
+
+  <!-- CONFIRM DELETE DIALOG (shared) -->
+  <v-dialog v-model="confirmDialog.show" max-width="420">
+    <v-card class="pa-2" rounded="lg">
+      <v-card-title class="font-weight-bold">Confirmer la suppression</v-card-title>
+      <v-card-text>{{ confirmDialog.message }}</v-card-text>
+      <v-card-actions>
+        <v-spacer></v-spacer>
+        <v-btn variant="text" @click="confirmDialog.show=false">Annuler</v-btn>
+        <v-btn color="error" @click="confirmDialog.action(); confirmDialog.show=false">Supprimer</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+</div>

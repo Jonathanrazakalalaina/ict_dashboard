@@ -1,0 +1,94 @@
+<div v-show="page === 'reports'" class="fade-in">
+
+  <v-row>
+    <v-col cols="12" md="6">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-3">Temps moyen de résolution</div>
+        <div class="text-h3 font-weight-bold text-primary">{{ avgResolutionTime }}</div>
+        <div class="text-caption text-medium-emphasis">Heures, tickets résolus/fermés</div>
+      </v-card>
+    </v-col>
+    <v-col cols="12" md="6">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-3">Taux de respect du SLA</div>
+        <div class="text-h3 font-weight-bold" :class="slaComplianceRate >= 80 ? 'text-success' : 'text-error'">{{ slaComplianceRate }}%</div>
+        <v-progress-linear :model-value="slaComplianceRate" height="8" rounded class="mt-3" :color="slaComplianceRate >= 80 ? 'success':'error'"></v-progress-linear>
+      </v-card>
+    </v-col>
+  </v-row>
+
+  <v-row class="mt-2">
+    <v-col cols="12" md="6">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-2">Tickets par technicien (tous statuts)</div>
+        <div style="height:280px"><canvas id="chartAgentAll"></canvas></div>
+      </v-card>
+    </v-col>
+    <v-col cols="12" md="6">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-2">Tickets par département</div>
+        <div style="height:280px"><canvas id="chartDept"></canvas></div>
+      </v-card>
+    </v-col>
+  </v-row>
+
+  <v-row class="mt-2">
+    <v-col cols="12">
+      <v-card class="section-card pa-4" elevation="0">
+        <div class="text-subtitle-1 font-weight-bold mb-2">Tickets par demandeur</div>
+        <div class="text-caption text-medium-emphasis mb-2">Nombre de tickets soumis, par utilisateur, tous statuts confondus</div>
+        <div class="custom-table-wrapper" :style="{ height: requesterChartHeight, maxHeight: 'auto' }">
+          <canvas id="chartRequester"></canvas>
+        </div>
+      </v-card>
+    </v-col>
+  </v-row>
+
+  <v-row class="mt-2">
+    <v-col cols="12">
+      <v-card class="section-card table-card" elevation="0">
+        <v-card-item>
+          <div class="d-flex align-center justify-space-between">
+            <div>
+              <span class="text-subtitle-1 font-weight-bold">Emprunts d'actifs en cours</span>
+              <div class="text-caption text-medium-emphasis">Qui a quel actif en ce moment — journal complet consultable dans Paramètres &gt; Journal d'audit</div>
+            </div>
+            <v-chip v-if="activeTransfers.length" size="small" color="primary" variant="flat" class="rounded-chip">{{ activeTransfers.length }} en cours</v-chip>
+          </div>
+        </v-card-item>
+        <div class="custom-table-wrapper" style="max-height:400px">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>Actif</th><th>Emprunté par</th><th>Emprunté le</th><th>Retour prévu</th><th>Statut</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="t in activeTransfers" :key="t.ID">
+                <td>{{ t.AssetLabel }}</td>
+                <td>{{ t.Emprunteur }}</td>
+                <td class="text-caption">{{ formatDate(t.DateEmprunt) }}</td>
+                <td class="text-caption">{{ t.DateRetourPrevue ? formatDate(t.DateRetourPrevue) : '—' }}</td>
+                <td>
+                  <v-chip size="small" :color="isTransferLate(t) ? 'error' : 'warning'" variant="tonal" class="rounded-chip">
+                    {{ isTransferLate(t) ? 'En retard' : 'En cours' }}
+                  </v-chip>
+                </td>
+                <td><v-btn size="small" variant="text" color="primary" @click="confirmReturnTransfer(t)">Marquer retourné</v-btn></td>
+              </tr>
+              <tr v-if="activeTransfers.length === 0">
+                <td colspan="6" class="text-center py-8 text-medium-emphasis">Aucun emprunt en cours.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </v-card>
+    </v-col>
+  </v-row>
+
+  <v-row class="mt-2">
+    <v-col cols="12" class="d-flex justify-end">
+      <v-btn color="primary" prepend-icon="mdi-download" @click="exportTicketsCSV">Exporter les tickets (CSV)</v-btn>
+    </v-col>
+  </v-row>
+</div>

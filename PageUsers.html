@@ -1,0 +1,79 @@
+<div v-show="page === 'users'" class="fade-in">
+
+  <v-card class="section-card pa-4 mb-4" elevation="0">
+    <v-row dense align="center">
+      <v-col cols="12" sm="6" md="4">
+        <v-text-field v-model="userFilters.q" prepend-inner-icon="mdi-magnify" placeholder="Rechercher un utilisateur..." variant="outlined" density="compact" hide-details clearable></v-text-field>
+      </v-col>
+      <v-col cols="6" sm="3" md="3">
+        <v-select v-model="userFilters.role" :items="['Tous'].concat(meta.roles)" label="Rôle" variant="outlined" density="compact" hide-details></v-select>
+      </v-col>
+      <v-col cols="6" sm="3" md="3">
+        <v-select v-model="userFilters.statut" :items="['Tous','Actif','Inactif']" label="Statut" variant="outlined" density="compact" hide-details></v-select>
+      </v-col>
+      <v-col cols="12" md="2" class="d-flex justify-end">
+        <v-btn color="primary" prepend-icon="mdi-account-plus" @click="openNewUser" block>Ajouter</v-btn>
+      </v-col>
+    </v-row>
+  </v-card>
+
+  <v-row>
+    <v-col cols="12" md="4" lg="3" v-for="u in filteredUsers" :key="u.ID">
+      <v-card class="kpi-card pa-4" elevation="0">
+        <div class="d-flex align-center mb-3">
+          <v-avatar size="42" color="primary" class="mr-3">
+            <span class="text-subtitle-2 font-weight-bold text-white">{{ initials(u.Nom) }}</span>
+          </v-avatar>
+          <div class="overflow-hidden">
+            <div class="text-subtitle-2 font-weight-bold text-truncate">{{ u.Nom }}</div>
+            <div class="text-caption text-medium-emphasis text-truncate">{{ u.Poste || '—' }}</div>
+          </div>
+        </div>
+        <div class="text-caption mb-1"><v-icon size="14">mdi-email-outline</v-icon> {{ u.Email }}</div>
+        <div class="text-caption mb-1"><v-icon size="14">mdi-office-building-outline</v-icon> {{ u.Departement || '—' }} · {{ u.Bureau || '—' }}</div>
+        <div class="d-flex align-center justify-space-between mt-3">
+          <v-chip size="small" :color="u.Role === 'Admin' ? 'error' : (u.Role === 'ICT' ? 'primary':'default')" variant="tonal" class="rounded-chip">{{ u.Role }}</v-chip>
+          <div>
+            <v-btn icon="mdi-pencil-outline" size="small" variant="text" @click="editUser(u)"></v-btn>
+            <v-btn icon="mdi-delete-outline" size="small" variant="text" color="error" @click="confirmDeleteUser(u)"></v-btn>
+          </div>
+        </div>
+      </v-card>
+    </v-col>
+    <v-col cols="12" v-if="filteredUsers.length === 0">
+      <div class="text-center py-8 text-medium-emphasis">Aucun utilisateur trouvé.</div>
+    </v-col>
+  </v-row>
+
+  <!-- USER DIALOG -->
+  <v-dialog v-model="userDialog" max-width="520" scrollable>
+    <v-card class="pa-2" rounded="lg">
+      <v-card-title class="d-flex align-center justify-space-between">
+        <span class="font-weight-bold">{{ editingUser.ID ? 'Modifier l\'utilisateur' : 'Nouvel utilisateur' }}</span>
+        <v-btn icon="mdi-close" variant="text" size="small" @click="userDialog=false"></v-btn>
+      </v-card-title>
+      <v-card-text>
+        <v-text-field v-model="editingUser.Nom" label="Nom complet *" variant="outlined" density="comfortable" class="mb-2"></v-text-field>
+        <v-text-field v-model="editingUser.Email" label="Email *" variant="outlined" density="comfortable" class="mb-2"></v-text-field>
+        <v-row dense>
+          <v-col cols="6"><v-text-field v-model="editingUser.Departement" label="Département" variant="outlined" density="comfortable"></v-text-field></v-col>
+          <v-col cols="6"><v-text-field v-model="editingUser.Poste" label="Poste" variant="outlined" density="comfortable"></v-text-field></v-col>
+        </v-row>
+        <v-select v-model="editingUser.Regions" :items="meta.regions" label="Région" variant="outlined" density="comfortable"></v-select>
+        <v-row dense>
+          <v-col cols="6"><v-text-field v-model="editingUser.Bureau" label="Bureau" variant="outlined" density="comfortable"></v-text-field></v-col>
+          <v-col cols="6"><v-text-field v-model="editingUser.Telephone" label="Téléphone" variant="outlined" density="comfortable"></v-text-field></v-col>
+        </v-row>
+        <v-row dense>
+          <v-col cols="6"><v-select v-model="editingUser.Role" :items="meta.roles" label="Rôle" variant="outlined" density="comfortable"></v-select></v-col>
+          <v-col cols="6"><v-select v-model="editingUser.Statut" :items="['Actif','Inactif']" label="Statut" variant="outlined" density="comfortable"></v-select></v-col>
+        </v-row>
+      </v-card-text>
+      <v-card-actions class="pa-4 pt-0">
+        <v-spacer></v-spacer>
+        <v-btn variant="text" @click="userDialog=false">Annuler</v-btn>
+        <v-btn color="primary" @click="submitUser" :loading="savingUser">Enregistrer</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+</div>

@@ -1,0 +1,184 @@
+<div v-show="page === 'assetsDashboard'" class="fade-in">
+
+  <!-- LOADER -->
+  <div v-if="tabLoading.assetsDashboard" class="d-flex flex-column align-center justify-center" style="min-height: 400px">
+    <v-progress-circular indeterminate color="primary" size="48"></v-progress-circular>
+    <span class="text-body-2 text-medium-emphasis mt-3">Chargement des statistiques d'actifs...</span>
+  </div>
+
+  <template v-else>
+    <!-- KPI CARDS -->
+    <v-row>
+      <v-col cols="12" sm="6" md="3" v-for="kpi in assetKpiCards" :key="kpi.label">
+        <v-card class="kpi-card pa-4" elevation="0">
+          <div class="d-flex align-center justify-space-between mb-3">
+            <div class="kpi-icon-box" :style="{ background: kpi.bg }">
+              <v-icon :color="kpi.color" size="22">{{ kpi.icon }}</v-icon>
+            </div>
+            <v-chip v-if="kpi.chip" size="x-small" :color="kpi.chipColor" variant="flat" class="rounded-chip">{{ kpi.chip }}</v-chip>
+          </div>
+          <div class="text-h4 font-weight-bold">{{ kpi.value }}</div>
+          <div class="text-body-2 text-medium-emphasis mt-1">{{ kpi.label }}</div>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <!-- CHARTS ROW 1 : Type + Statut -->
+    <v-row class="mt-2">
+      <v-col cols="12" md="7">
+        <v-card class="section-card pa-4" elevation="0">
+          <div class="text-subtitle-1 font-weight-bold mb-2">Répartition par région</div>
+          <div style="height:320px">
+            <canvas id="chartAssetRegion"></canvas>
+          </div>
+        </v-card>
+      </v-col>
+      <v-col cols="12" md="5">
+        <v-card class="section-card pa-4" elevation="0">
+          <div class="text-subtitle-1 font-weight-bold mb-2">Capitalized vs Expensed</div>
+          <div style="height:320px">
+            <canvas id="chartAssetBook"></canvas>
+          </div>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <!-- CHARTS ROW 2 : Book + Région -->
+    <v-row class="mt-2">
+      <v-col cols="12" md="5">
+        <v-card class="section-card pa-4" elevation="0">
+          <div class="text-subtitle-1 font-weight-bold mb-2">Répartition par statut</div>
+          <div style="height:280px">
+            <canvas id="chartAssetStatus"></canvas>
+          </div>
+        </v-card>
+      </v-col>
+      <v-col cols="12" md="7">
+        <v-card class="section-card pa-4" elevation="0">
+          <div class="text-subtitle-1 font-weight-bold mb-2">Répartition par type</div>
+          <div style="height:280px">
+            <canvas id="chartAssetType"></canvas>
+          </div>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <!-- TAGS EXTRA (repliable) -->
+    <v-row class="mt-2">
+      <v-col cols="12">
+        <v-card class="section-card pa-4" elevation="0">
+
+          <!-- En-tête toujours visible : titre + résumé des prochains numéros + bouton -->
+          <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+            <div class="d-flex align-center flex-wrap ga-2">
+              <span class="text-subtitle-1 font-weight-bold">Tags EXTRA</span>
+              <v-chip v-if="assetAnalytics.extraTags.invalid.length" size="x-small" color="warning" variant="flat" prepend-icon="mdi-alert-outline">
+                {{ assetAnalytics.extraTags.invalid.length }} non conforme(s)
+              </v-chip>
+
+              <!-- Résumé compact quand la section est repliée -->
+              <template v-if="!extraTagsExpanded">
+                <span class="text-caption text-medium-emphasis ml-2">Prochains :</span>
+                <v-chip
+                  v-for="p in assetAnalytics.extraTags.prefixes.filter(p => p.next).slice(0, 6)"
+                  :key="p.prefix" size="x-small" color="success" variant="tonal">
+                  {{ p.next }}<template v-if="p.marques && p.marques.length"> ({{ p.marques.join(', ') }})</template>
+                </v-chip>
+                <span v-if="assetAnalytics.extraTags.prefixes.filter(p => p.next).length > 6" class="text-caption text-medium-emphasis">
+                  +{{ assetAnalytics.extraTags.prefixes.filter(p => p.next).length - 6 }}
+                </span>
+                <span v-if="!assetAnalytics.extraTags.prefixes.length" class="text-caption text-medium-emphasis">Aucun tag conforme</span>
+              </template>
+            </div>
+
+            <v-btn
+              size="small"
+              variant="tonal"
+              color="primary"
+              :prepend-icon="extraTagsExpanded ? 'mdi-arrow-collapse-vertical' : 'mdi-arrow-expand-vertical'"
+              @click="extraTagsExpanded = !extraTagsExpanded">
+              {{ extraTagsExpanded ? 'Réduire' : 'Voir le détail' }}
+            </v-btn>
+          </div>
+
+          <!-- Détail déployable -->
+          <v-expand-transition>
+            <div v-show="extraTagsExpanded">
+              <div class="text-caption text-medium-emphasis mt-3 mb-3">Format XXX000 — prochains numéros disponibles par préfixe</div>
+
+              <v-alert v-if="assetAnalytics.extraTags.invalid.length" type="warning" variant="tonal" density="compact" class="mb-3">
+                {{ assetAnalytics.extraTags.invalid.length }} actif(s) EXTRA avec un tag non conforme, à corriger :
+                {{ assetAnalytics.extraTags.invalid.map(i => i.ID + (i.tag ? ' (' + i.tag + ')' : '')).join(', ') }}
+              </v-alert>
+
+              <div v-if="!assetAnalytics.extraTags.prefixes.length" class="text-body-2 text-medium-emphasis">
+                Aucun actif EXTRA avec un tag conforme.
+              </div>
+
+              <v-row v-else>
+                <v-col cols="12" sm="6" md="4" v-for="p in assetAnalytics.extraTags.prefixes" :key="p.prefix">
+                  <div class="border rounded-lg pa-3 h-100">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                      <span class="text-h6 font-weight-bold">
+                        {{ p.prefix }}<span v-if="p.marques && p.marques.length" class="text-body-2 font-weight-regular text-medium-emphasis"> ({{ p.marques.join(', ') }})</span>
+                      </span>
+                      <v-chip v-if="p.next" color="success" variant="flat" size="small" prepend-icon="mdi-arrow-right-bold">{{ p.next }}</v-chip>
+                      <v-chip v-else color="error" variant="flat" size="small">Plage épuisée</v-chip>
+                    </div>
+                    <div class="text-caption text-medium-emphasis mb-2">{{ p.count }} tag(s) · dernier : {{ p.lastTag }}</div>
+                    <div class="d-flex flex-wrap ga-1" style="max-height:96px; overflow-y:auto">
+                      <v-chip v-for="t in p.tags" :key="t" size="x-small" variant="tonal">{{ t }}</v-chip>
+                    </div>
+                  </div>
+                </v-col>
+              </v-row>
+            </div>
+          </v-expand-transition>
+
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <v-row class="mt-2">
+      <v-col cols="12">
+        <v-card class="section-card table-card" elevation="0">
+          <v-card-item>
+            <div class="d-flex align-center justify-space-between">
+              <div>
+                <span class="text-subtitle-1 font-weight-bold">Emprunts d'actifs en cours</span>
+                <div class="text-caption text-medium-emphasis">Qui a quel actif en ce moment — journal complet consultable dans Paramètres &gt; Journal d'audit</div>
+              </div>
+              <v-chip v-if="activeTransfers.length" size="small" color="primary" variant="flat" class="rounded-chip">{{ activeTransfers.length }} en cours</v-chip>
+            </div>
+          </v-card-item>
+          <div class="custom-table-wrapper" style="max-height:400px">
+            <table class="custom-table">
+              <thead>
+                <tr>
+                  <th>Actif</th><th>Emprunté par</th><th>Emprunté le</th><th>Retour prévu</th><th>Statut</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in activeTransfers" :key="t.ID">
+                  <td>{{ t.AssetLabel }}</td>
+                  <td>{{ t.Emprunteur }}</td>
+                  <td class="text-caption">{{ formatDate(t.DateEmprunt) }}</td>
+                  <td class="text-caption">{{ t.DateRetourPrevue ? formatDate(t.DateRetourPrevue) : '—' }}</td>
+                  <td>
+                    <v-chip size="small" :color="isTransferLate(t) ? 'error' : 'warning'" variant="tonal" class="rounded-chip">
+                      {{ isTransferLate(t) ? 'En retard' : 'En cours' }}
+                    </v-chip>
+                  </td>
+                  <td><v-btn size="small" variant="text" color="primary" @click="confirmReturnTransfer(t)">Marquer retourné</v-btn></td>
+                </tr>
+                <tr v-if="activeTransfers.length === 0">
+                  <td colspan="6" class="text-center py-8 text-medium-emphasis">Aucun emprunt en cours.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </v-card>
+      </v-col>
+    </v-row>
+  </template>
+</div>

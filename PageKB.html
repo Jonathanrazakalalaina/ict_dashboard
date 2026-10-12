@@ -1,0 +1,128 @@
+<div v-show="page === 'kb'" class="fade-in">
+
+  <v-row>
+    <v-col cols="12" md="4">
+      <v-card class="section-card pa-4 mb-4" elevation="0">
+        <v-text-field v-model="kbFilters.q" prepend-inner-icon="mdi-magnify" placeholder="Rechercher un article..." variant="outlined" density="compact" hide-details clearable class="mb-3"></v-text-field>
+        <v-btn color="primary" prepend-icon="mdi-plus" @click="openNewArticle" block class="mb-3">Nouvel article</v-btn>
+        <v-list density="compact" nav>
+          <v-list-item
+            v-for="c in ['Toutes'].concat(meta.categories)" :key="c"
+            :active="kbFilters.categorie === c" @click="kbFilters.categorie = c" rounded="lg" class="mb-1">
+            <v-list-item-title>{{ c }}</v-list-item-title>
+          </v-list-item>
+        </v-list>
+      </v-card>
+    </v-col>
+
+    <v-col cols="12" md="8">
+      <v-row>
+        <v-col cols="12" sm="6" v-for="a in filteredArticles" :key="a.ID">
+          <v-card class="kpi-card pa-4" elevation="0" style="cursor:pointer" @click="openArticle(a)">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <v-chip size="small" color="primary" variant="tonal" class="rounded-chip">{{ a.Categorie }}</v-chip>
+              <span class="text-caption text-medium-emphasis"><v-icon size="14">mdi-eye-outline</v-icon> {{ a.Vues || 0 }}</span>
+            </div>
+            <div class="text-subtitle-2 font-weight-bold mb-1">{{ a.Titre }}</div>
+            <div class="text-caption text-medium-emphasis text-truncate-2">{{ (a.Contenu||'').substring(0,110) }}...</div>
+            <div class="text-caption text-medium-emphasis mt-2">Par {{ a.Auteur }} · {{ formatDate(a.DateCreation) }}</div>
+          </v-card>
+        </v-col>
+        <v-col cols="12" v-if="filteredArticles.length === 0">
+          <div class="text-center py-8 text-medium-emphasis">Aucun article trouvé.</div>
+        </v-col>
+      </v-row>
+    </v-col>
+  </v-row>
+
+  <!-- ARTICLE VIEW/EDIT DIALOG -->
+  <v-dialog v-model="articleDialog" max-width="720" scrollable>
+    <v-card class="pa-2" rounded="lg">
+      <v-card-title class="d-flex align-center justify-space-between">
+        <span class="font-weight-bold">{{ articleEditMode ? (editingArticle.ID ? 'Modifier l\'article' : 'Nouvel article') : editingArticle.Titre }}</span>
+        <div>
+          <v-btn v-if="!articleEditMode" icon="mdi-pencil-outline" size="small" variant="text" @click="articleEditMode = true"></v-btn>
+          <v-btn icon="mdi-close" variant="text" size="small" @click="articleDialog=false"></v-btn>
+        </div>
+      </v-card-title>
+      <v-card-text>
+        <template v-if="articleEditMode">
+          <v-text-field v-model="editingArticle.Titre" label="Titre *" variant="outlined" density="comfortable" class="mb-2"></v-text-field>
+          <v-select v-model="editingArticle.Categorie" :items="meta.categories" label="Catégorie" variant="outlined" density="comfortable" class="mb-2"></v-select>
+          <v-card
+            class="mb-2"
+            color="blue-grey-darken-2"
+            rounded="lg"
+            variant="tonal"
+          >
+            <v-toolbar density="compact" rounded="t-lg" title="Contenu *" border>
+              <template v-slot:append>
+                <div class="d-flex align-center pa-1">
+                  <div ref="articleDesktopTarget"></div>
+
+                  <v-btn
+                    v-if="display.mobile.value"
+                    icon="mdi-dots-vertical"
+                    variant="text"
+                    rounded="lg"
+                    size="32"
+                  >
+                    <v-icon>mdi-dots-vertical</v-icon>
+
+                    <v-menu activator="parent" width="200">
+                      <v-card rounded="lg">
+                        <div ref="articleMobileTarget"></div>
+                      </v-card>
+                    </v-menu>
+                  </v-btn>
+                </div>
+              </template>
+            </v-toolbar>
+
+            <div class="px-4 pb-4">
+              <v-textarea
+                ref="articleTextarea"
+                v-model="editingArticle.Contenu"
+                variant="plain"
+                auto-grow
+                hide-details
+              ></v-textarea>
+            </div>
+          </v-card>
+
+          <Teleport v-if="articleTeleportTarget" :to="articleTeleportTarget">
+            <div class="d-flex ga-2 pa-2 flex-wrap justify-space-between">
+              <template v-for="(item, i) in articleActions" :key="i">
+                <v-btn
+                  v-if="!item.divider"
+                  :icon="item.icon"
+                  variant="text"
+                  rounded="lg"
+                  size="32"
+                  @click="item.onClick"
+                ></v-btn>
+
+                <v-divider v-else-if="!display.mobile.value" class="mx-1" vertical></v-divider>
+              </template>
+            </div>
+          </Teleport>
+          <v-spacer></v-spacer>
+          <v-text-field v-model="editingArticle.TagsMots" label="Mots-clés (séparés par virgule)" density="comfortable"></v-text-field>
+        </template>
+        <template v-else>
+          <div class="d-flex ga-3 mb-3">
+            <v-chip size="small" color="primary" variant="tonal">{{ editingArticle.Categorie }}</v-chip>
+            <span class="text-caption text-medium-emphasis align-self-center">Par {{ editingArticle.Auteur }} · {{ formatDate(editingArticle.DateCreation) }}</span>
+          </div>
+          <!-- MODIFIÉ : rendu markdown sécurisé au lieu du texte brut -->
+          <div class="kb-content article-rendered-content text-body-2" v-html="renderedArticleContent"></div>
+        </template>
+      </v-card-text>
+      <v-card-actions class="pa-4 pt-0" v-if="articleEditMode">
+        <v-spacer></v-spacer>
+        <v-btn variant="text" @click="articleDialog=false">Annuler</v-btn>
+        <v-btn color="primary" @click="submitArticle" :loading="savingArticle">Enregistrer</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+</div>
